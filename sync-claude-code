@@ -1,0 +1,192 @@
+#!/usr/bin/env python3
+"""Sync agent skills into ~/.claude/skills/ based on a JSON manifest.
+
+A manifest is a JSON file at manifests/<name>.json with this shape:
+
+    {
+      "name": "default",
+      "description": "...",
+      "skills": [
+        { "name": "learn", "path": "${AGENT_SKILLS_REPO}/skills/learn" },
+        { "name": "work",  "path": "${HOME}/src/private/skills/work" }
+      ]
+    }
+
+Paths support ${AGENT_SKILLS_REPO} (auto-resolved to the repo root), arbitrary
+env vars via ${VAR}, and a leading ~ for the home directory.
+
+The script symlinks each manifest entry into ~/.claude/skills/<name>, refuses
+to clobber non-symlink directories there, and tracks what it linked in a
+state file so manifest swaps can clean up stale symlinks (including links
+to paths outside the repo).
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+DEFAULT_TARGET = Path.home() / ".claude" / "skills"
+STATE_FILE_NAME = ".agent-skills-state.json"
+
+
+def expand_path(raw: str) -> Path:
+    """Resolve ${AGENT_SKILLS_REPO}, env vars, and ~ in a manifest path."""
+    s = raw.replace("${AGENT_SKILLS_REPO}", str(REPO))
+    s = os.path.expandvars(s)
+    return Path(s).expanduser()
+
+
+def load_manifest(name: str) -> dict:
+    p = REPO / "manifests" / f"{name}.json"
+    if not p.exists():
+        sys.exit(f"manifest not found: {p}\n"
+                 f"available: {', '.join(list_manifests()) or '(none)'}")
+    return json.loads(p.read_text())
+
+
+def list_manifests() -> list[str]:
+    d = REPO / "manifests"
+    return sorted(p.stem for p in d.glob("*.json")) if d.is_dir() else []
+
+
+def load_state(target: Path) -> dict:
+    p = target / STATE_FILE_NAME
+    if not p.exists():
+        return {"manifest": None, "names": []}
+    try:
+        return json.loads(p.read_text())
+    except json.JSONDecodeError:
+        return {"manifest": None, "names": []}
+
+
+def save_state(target: Path, manifest_name: str, names: list[str]) -> None:
+    p = target / STATE_FILE_NAME
+    p.write_text(json.dumps({
+        "manifest": manifest_name,
+        "linked_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "names": sorted(names),
+    }, indent=2) + "\n")
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(
+        description="Sync agent skills from a manifest into ~/.claude/skills/.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    ap.add_argument(
+        "--manifest", "-m",
+        help="Manifest name under manifests/ (without .json). "
+             "Default: last used, or 'default' on first run.",
+    )
+    ap.add_argument(
+        "--target", "-t",
+        default=str(DEFAULT_TARGET),
+        help=f"Target skills directory (default: {DEFAULT_TARGET}).",
+    )
+    ap.add_argument("--dry-run", "-n", action="store_true",
+                    help="Print plan without changing the filesystem.")
+    ap.add_argument("--list", action="store_true",
+                    help="List available manifests and exit.")
+    args = ap.parse_args()
+
+    if args.list:
+        for n in list_manifests():
+            print(n)
+        return 0
+
+    target = Path(args.target).expanduser()
+    target.mkdir(parents=True, exist_ok=True)
+
+    state = load_state(target)
+    manifest_name = args.manifest or state.get("manifest") or "default"
+    manifest = load_manifest(manifest_name)
+
+    desired: dict[str, Path] = {}
+    for entry in manifest.get("skills", []):
+        name = entry["name"]
+        if name in desired:
+            sys.exit(f"duplicate skill name in manifest: {name}")
+        desired[name] = expand_path(entry["path"])
+
+    previous = set(state.get("names", []))
+    desired_names = set(desired)
+
+    actions: list[tuple[str, str, Path | None, Path, str]] = []
+
+    for name in sorted(previous - desired_names):
+        dst = target / name
+        if dst.is_symlink():
+            actions.append(("remove", name, None, dst,
+                            f"-> {dst.readlink()} (not in manifest)"))
+
+    for name in sorted(desired_names):
+        src = desired[name]
+        dst = target / name
+        if not src.exists():
+            actions.append(("MISS", name, src, dst, "source missing"))
+            continue
+        if dst.is_symlink():
+            cur = Path(os.readlink(dst))
+            cur_resolved = (dst.parent / cur).resolve() if not cur.is_absolute() else cur.resolve()
+            if cur_resolved == src.resolve():
+                actions.append(("ok", name, src, dst, ""))
+            else:
+                actions.append(("relink", name, src, dst, f"was: {cur}"))
+        elif dst.exists():
+            actions.append(("WARN", name, src, dst,
+                            "non-symlink at destination — leaving alone"))
+        else:
+            actions.append(("link", name, src, dst, ""))
+
+    width = max((len(name) for _, name, *_ in actions), default=8)
+    for op, name, src, _dst, note in actions:
+        srcs = f"-> {src}" if src else ""
+        print(f"  {op:<6} {name:<{width}}  {note}  {srcs}".rstrip())
+
+    if not actions:
+        print("  (nothing to do)")
+
+    print()
+    print(f"manifest={manifest_name}  desired={len(desired_names)}  "
+          f"target={target}")
+
+    if args.dry_run:
+        print("(dry run — no changes made)")
+        return 0
+
+    final: list[str] = []
+    had_error = False
+    for op, name, src, dst, note in actions:
+        try:
+            if op == "remove":
+                dst.unlink()
+            elif op == "relink":
+                dst.unlink()
+                dst.symlink_to(src)
+                final.append(name)
+            elif op == "link":
+                dst.symlink_to(src)
+                final.append(name)
+            elif op == "ok":
+                final.append(name)
+            elif op == "WARN":
+                pass
+            elif op == "MISS":
+                print(f"ERROR: {name}: source missing ({src})", file=sys.stderr)
+                had_error = True
+        except OSError as e:
+            print(f"ERROR: {name}: {e}", file=sys.stderr)
+            had_error = True
+
+    save_state(target, manifest_name, final)
+    return 1 if had_error else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
