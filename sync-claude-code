@@ -1,24 +1,39 @@
 #!/usr/bin/env python3
-"""Sync agent skills into ~/.claude/skills/ based on a JSON manifest.
+"""Sync agent state into the local agent's directories based on a JSON manifest.
 
 A manifest is a JSON file at manifests/<name>.json with this shape:
 
     {
-      "name": "default",
+      "name": "macbook",
       "description": "...",
       "skills": [
-        { "name": "learn", "path": "${AGENT_SKILLS_REPO}/skills/learn" },
-        { "name": "work",  "path": "${HOME}/src/private/skills/work" }
+        { "name": "learn", "path": "${AGENT_SKILLS_REPO}/skills/learn" }
+      ],
+      "links": [
+        { "src": "${AGENT_SKILLS_REPO}/claude-code/CLAUDE.md",
+          "dst": "${HOME}/.claude/CLAUDE.md" },
+        { "src": "${AGENT_SKILLS_REPO}/claude-code/hooks/permission-notify.sh",
+          "dst": "${HOME}/.claude/hooks/permission-notify.sh" }
       ]
     }
 
-Paths support ${AGENT_SKILLS_REPO} (auto-resolved to the repo root), arbitrary
-env vars via ${VAR}, and a leading ~ for the home directory.
+`skills` is shorthand for "link this into the skills target directory under
+the entry's name". `links` is the general form: any source linked to any
+destination. Use `links` to sync CLAUDE.md, hooks, settings, or anything else
+that lives elsewhere under ~/.claude/ — or under future agents' directories
+(e.g. ~/.gemini/...).
 
-The script symlinks each manifest entry into ~/.claude/skills/<name>, refuses
-to clobber non-symlink directories there, and tracks what it linked in a
-state file so manifest swaps can clean up stale symlinks (including links
-to paths outside the repo).
+Both source and destination paths support:
+  - ${AGENT_SKILLS_REPO}  (auto-resolved to this repo's root)
+  - any environment variable via ${VAR}
+  - a leading ~
+
+The script:
+  - Symlinks each entry into its destination, creating parent dirs as needed.
+  - Refuses to overwrite a non-symlink at the destination.
+  - Tracks every destination it created in
+    <skills_target>/.agent-skills-state.json so swapping manifests removes
+    stale symlinks even when they pointed at paths outside this repo.
 """
 
 from __future__ import annotations
@@ -31,12 +46,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-DEFAULT_TARGET = Path.home() / ".claude" / "skills"
+DEFAULT_SKILLS_TARGET = Path.home() / ".claude" / "skills"
 STATE_FILE_NAME = ".agent-skills-state.json"
 
 
 def expand_path(raw: str) -> Path:
-    """Resolve ${AGENT_SKILLS_REPO}, env vars, and ~ in a manifest path."""
     s = raw.replace("${AGENT_SKILLS_REPO}", str(REPO))
     s = os.path.expandvars(s)
     return Path(s).expanduser()
@@ -55,40 +69,67 @@ def list_manifests() -> list[str]:
     return sorted(p.stem for p in d.glob("*.json")) if d.is_dir() else []
 
 
-def load_state(target: Path) -> dict:
-    p = target / STATE_FILE_NAME
-    if not p.exists():
-        return {"manifest": None, "names": []}
+def load_state(state_path: Path) -> dict:
+    if not state_path.exists():
+        return {"manifest": None, "links": []}
     try:
-        return json.loads(p.read_text())
+        data = json.loads(state_path.read_text())
     except json.JSONDecodeError:
-        return {"manifest": None, "names": []}
+        return {"manifest": None, "links": []}
+    if "names" in data and "links" not in data:
+        skills_target = state_path.parent
+        data["links"] = [str(skills_target / n) for n in data["names"]]
+    data.setdefault("links", [])
+    return data
 
 
-def save_state(target: Path, manifest_name: str, names: list[str]) -> None:
-    p = target / STATE_FILE_NAME
-    p.write_text(json.dumps({
+def save_state(state_path: Path, manifest_name: str, links: list[Path]) -> None:
+    state_path.write_text(json.dumps({
         "manifest": manifest_name,
         "linked_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "names": sorted(names),
+        "links": sorted({str(p) for p in links}),
     }, indent=2) + "\n")
+
+
+def collect_desired(manifest: dict, skills_target: Path) -> list[tuple[str, Path, Path]]:
+    """Return (label, src, dst) tuples from the manifest."""
+    out: list[tuple[str, Path, Path]] = []
+    seen: set[Path] = set()
+
+    for entry in manifest.get("skills", []):
+        name = entry["name"]
+        src = expand_path(entry["path"])
+        dst = skills_target / name
+        if dst in seen:
+            sys.exit(f"duplicate destination in manifest: {dst}")
+        seen.add(dst)
+        out.append((name, src, dst))
+
+    for entry in manifest.get("links", []):
+        src = expand_path(entry["src"])
+        dst = expand_path(entry["dst"])
+        label = entry.get("label") or dst.name
+        if dst in seen:
+            sys.exit(f"duplicate destination in manifest: {dst}")
+        seen.add(dst)
+        out.append((label, src, dst))
+
+    return out
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(
-        description="Sync agent skills from a manifest into ~/.claude/skills/.",
+        description="Sync agent state from a manifest into the local filesystem.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    ap.add_argument(
-        "--manifest", "-m",
-        help="Manifest name under manifests/ (without .json). "
-             "Default: last used, or 'default' on first run.",
-    )
-    ap.add_argument(
-        "--target", "-t",
-        default=str(DEFAULT_TARGET),
-        help=f"Target skills directory (default: {DEFAULT_TARGET}).",
-    )
+    ap.add_argument("--manifest", "-m",
+                    help="Manifest name under manifests/ (without .json). "
+                         "Default: last used, or 'default' on first run.")
+    ap.add_argument("--skills-target", "-t",
+                    default=str(DEFAULT_SKILLS_TARGET),
+                    help=f"Where 'skills' entries get linked "
+                         f"(default: {DEFAULT_SKILLS_TARGET}). The state file "
+                         f"also lives here.")
     ap.add_argument("--dry-run", "-n", action="store_true",
                     help="Print plan without changing the filesystem.")
     ap.add_argument("--list", action="store_true",
@@ -100,91 +141,85 @@ def main() -> int:
             print(n)
         return 0
 
-    target = Path(args.target).expanduser()
-    target.mkdir(parents=True, exist_ok=True)
+    skills_target = Path(args.skills_target).expanduser()
+    skills_target.mkdir(parents=True, exist_ok=True)
+    state_path = skills_target / STATE_FILE_NAME
 
-    state = load_state(target)
+    state = load_state(state_path)
     manifest_name = args.manifest or state.get("manifest") or "default"
     manifest = load_manifest(manifest_name)
 
-    desired: dict[str, Path] = {}
-    for entry in manifest.get("skills", []):
-        name = entry["name"]
-        if name in desired:
-            sys.exit(f"duplicate skill name in manifest: {name}")
-        desired[name] = expand_path(entry["path"])
-
-    previous = set(state.get("names", []))
-    desired_names = set(desired)
+    desired = collect_desired(manifest, skills_target)
+    desired_dsts = {dst for _, _, dst in desired}
+    previous_dsts = {Path(p) for p in state.get("links", [])}
 
     actions: list[tuple[str, str, Path | None, Path, str]] = []
 
-    for name in sorted(previous - desired_names):
-        dst = target / name
+    for dst in sorted(previous_dsts - desired_dsts):
         if dst.is_symlink():
-            actions.append(("remove", name, None, dst,
+            actions.append(("remove", dst.name, None, dst,
                             f"-> {dst.readlink()} (not in manifest)"))
 
-    for name in sorted(desired_names):
-        src = desired[name]
-        dst = target / name
+    for label, src, dst in desired:
         if not src.exists():
-            actions.append(("MISS", name, src, dst, "source missing"))
+            actions.append(("MISS", label, src, dst, "source missing"))
             continue
         if dst.is_symlink():
-            cur = Path(os.readlink(dst))
-            cur_resolved = (dst.parent / cur).resolve() if not cur.is_absolute() else cur.resolve()
-            if cur_resolved == src.resolve():
-                actions.append(("ok", name, src, dst, ""))
+            cur_raw = Path(os.readlink(dst))
+            cur = (dst.parent / cur_raw).resolve() if not cur_raw.is_absolute() else cur_raw.resolve()
+            if cur == src.resolve():
+                actions.append(("ok", label, src, dst, ""))
             else:
-                actions.append(("relink", name, src, dst, f"was: {cur}"))
+                actions.append(("relink", label, src, dst, f"was: {cur_raw}"))
         elif dst.exists():
-            actions.append(("WARN", name, src, dst,
+            actions.append(("WARN", label, src, dst,
                             "non-symlink at destination — leaving alone"))
         else:
-            actions.append(("link", name, src, dst, ""))
+            actions.append(("link", label, src, dst, ""))
 
-    width = max((len(name) for _, name, *_ in actions), default=8)
-    for op, name, src, _dst, note in actions:
-        srcs = f"-> {src}" if src else ""
-        print(f"  {op:<6} {name:<{width}}  {note}  {srcs}".rstrip())
+    label_w = max((len(label) for _, label, *_ in actions), default=8)
+    for op, label, src, dst, note in actions:
+        srcs = f"{dst} -> {src}" if src else f"{dst}"
+        print(f"  {op:<6} {label:<{label_w}}  {note}  {srcs}".rstrip())
 
     if not actions:
         print("  (nothing to do)")
 
     print()
-    print(f"manifest={manifest_name}  desired={len(desired_names)}  "
-          f"target={target}")
+    print(f"manifest={manifest_name}  desired={len(desired_dsts)}  "
+          f"skills_target={skills_target}")
 
     if args.dry_run:
         print("(dry run — no changes made)")
         return 0
 
-    final: list[str] = []
+    final: list[Path] = []
     had_error = False
-    for op, name, src, dst, note in actions:
+    for op, label, src, dst, note in actions:
         try:
             if op == "remove":
                 dst.unlink()
             elif op == "relink":
                 dst.unlink()
+                dst.parent.mkdir(parents=True, exist_ok=True)
                 dst.symlink_to(src)
-                final.append(name)
+                final.append(dst)
             elif op == "link":
+                dst.parent.mkdir(parents=True, exist_ok=True)
                 dst.symlink_to(src)
-                final.append(name)
+                final.append(dst)
             elif op == "ok":
-                final.append(name)
+                final.append(dst)
             elif op == "WARN":
                 pass
             elif op == "MISS":
-                print(f"ERROR: {name}: source missing ({src})", file=sys.stderr)
+                print(f"ERROR: {label}: source missing ({src})", file=sys.stderr)
                 had_error = True
         except OSError as e:
-            print(f"ERROR: {name}: {e}", file=sys.stderr)
+            print(f"ERROR: {label} ({dst}): {e}", file=sys.stderr)
             had_error = True
 
-    save_state(target, manifest_name, final)
+    save_state(state_path, manifest_name, final)
     return 1 if had_error else 0
 
 
