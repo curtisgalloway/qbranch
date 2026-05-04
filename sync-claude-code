@@ -41,6 +41,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -115,6 +116,28 @@ def collect_desired(manifest: dict, skills_target: Path) -> list[tuple[str, Path
         out.append((label, src, dst))
 
     return out
+
+
+def offer_claude(failures: list[str]) -> None:
+    """If claude is on PATH, offer to run it with the failure context."""
+    if not shutil.which("claude"):
+        return
+    if not sys.stdin.isatty():
+        return
+    lines = "\n".join(f"  - {f}" for f in failures)
+    prompt = (
+        f"The sync-claude-code script failed with the following problems:\n"
+        f"{lines}\n"
+        f"Please help me fix them."
+    )
+    print(f"\nRun claude to fix this? [y/N] ", end="", flush=True)
+    try:
+        answer = input().strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return
+    if answer == "y":
+        os.execvp("claude", ["claude", prompt])
 
 
 def main() -> int:
@@ -195,6 +218,7 @@ def main() -> int:
 
     final: list[Path] = []
     had_error = False
+    failures: list[str] = []
     for op, label, src, dst, note in actions:
         try:
             if op == "remove":
@@ -211,15 +235,26 @@ def main() -> int:
             elif op == "ok":
                 final.append(dst)
             elif op == "WARN":
-                pass
+                msg = f"{label}: non-symlink at {dst} — refusing to overwrite"
+                print(f"ERROR: {msg}", file=sys.stderr)
+                failures.append(msg)
+                had_error = True
             elif op == "MISS":
-                print(f"ERROR: {label}: source missing ({src})", file=sys.stderr)
+                msg = f"{label}: source missing at {src}"
+                print(f"ERROR: {msg}", file=sys.stderr)
+                failures.append(msg)
                 had_error = True
         except OSError as e:
-            print(f"ERROR: {label} ({dst}): {e}", file=sys.stderr)
+            msg = f"{label} ({dst}): {e}"
+            print(f"ERROR: {msg}", file=sys.stderr)
+            failures.append(msg)
             had_error = True
 
     save_state(state_path, manifest_name, final)
+
+    if failures:
+        offer_claude(failures)
+
     return 1 if had_error else 0
 
 
