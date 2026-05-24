@@ -4,7 +4,7 @@
 A manifest is a JSON file at manifests/<name>.json with this shape:
 
     {
-      "name": "macbook",
+      "name": "ozone",
       "description": "...",
       "skills": [
         { "name": "learn", "path": "${AGENT_SKILLS_REPO}/skills/learn" }
