@@ -49,6 +49,8 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 DEFAULT_SKILLS_TARGET = Path.home() / ".claude" / "skills"
 STATE_FILE_NAME = ".agent-skills-state.json"
+PUBLIC_SKILLS_REPO = Path.home() / "src" / "public-skills"
+PUBLIC_SKILLS_DIR = PUBLIC_SKILLS_REPO / "skills"
 
 
 def expand_path(raw: str) -> Path:
@@ -118,6 +120,32 @@ def collect_desired(manifest: dict, skills_target: Path) -> list[tuple[str, Path
     return out
 
 
+def collect_public_skills(
+    skills_target: Path, taken_dsts: set[Path]
+) -> tuple[list[tuple[str, Path, Path]], list[str]]:
+    """Implicit skill entries from ~/src/public-skills/skills/.
+
+    Returns (entries, warnings). Manifest entries win on name collision; the
+    conflicting public-skills entry is skipped and surfaced in `warnings`.
+    """
+    entries: list[tuple[str, Path, Path]] = []
+    warnings: list[str] = []
+    if not PUBLIC_SKILLS_DIR.is_dir():
+        return entries, warnings
+    for child in sorted(PUBLIC_SKILLS_DIR.iterdir()):
+        if not child.is_dir() or not (child / "SKILL.md").exists():
+            continue
+        name = child.name
+        dst = skills_target / name
+        if dst in taken_dsts:
+            warnings.append(
+                f"public-skills/{name}: manifest already defines {dst}, skipped"
+            )
+            continue
+        entries.append((name, child, dst))
+    return entries, warnings
+
+
 def offer_claude(failures: list[str]) -> None:
     """If claude is on PATH, offer to run it with the failure context."""
     if not shutil.which("claude"):
@@ -173,6 +201,18 @@ def main() -> int:
     manifest = load_manifest(manifest_name)
 
     desired = collect_desired(manifest, skills_target)
+    taken_dsts = {dst for _, _, dst in desired}
+    public_entries, public_warnings = collect_public_skills(skills_target, taken_dsts)
+    desired.extend(public_entries)
+
+    if not PUBLIC_SKILLS_DIR.is_dir():
+        print(
+            f"note: {PUBLIC_SKILLS_REPO} not found — consider cloning it "
+            f"for additional skills"
+        )
+    for w in public_warnings:
+        print(f"warning: {w}")
+
     desired_dsts = {dst for _, _, dst in desired}
     previous_dsts = {Path(p) for p in state.get("links", [])}
 
