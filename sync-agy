@@ -1,5 +1,19 @@
 #!/usr/bin/env python3
-"""Sync agent state into the local agent's directories based on a JSON manifest.
+# Copyright 2026 contributors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Sync agent state into local Antigravity (agy) directories based on a JSON manifest.
 
 A manifest is a JSON file at manifests/<name>.json with this shape:
 
@@ -10,30 +24,18 @@ A manifest is a JSON file at manifests/<name>.json with this shape:
         { "name": "learn", "path": "${AGENT_SKILLS_REPO}/skills/learn" }
       ],
       "links": [
-        { "src": "${AGENT_SKILLS_REPO}/claude-code/CLAUDE.md",
-          "dst": "${HOME}/.claude/CLAUDE.md" },
-        { "src": "${AGENT_SKILLS_REPO}/claude-code/hooks/permission-notify.sh",
-          "dst": "${HOME}/.claude/hooks/permission-notify.sh" }
+        { "src": "${AGENT_SKILLS_REPO}/agy/AGENTS.md",
+          "dst": "${HOME}/.gemini/AGENTS.md" }
+      ],
+      "agy_links": [
+        { "src": "${AGENT_SKILLS_REPO}/agy/settings.json",
+          "dst": "${HOME}/.gemini/antigravity-cli/settings.json" }
       ]
     }
 
-`skills` is shorthand for "link this into the skills target directory under
-the entry's name". `links` is the general form: any source linked to any
-destination. Use `links` to sync CLAUDE.md, hooks, settings, or anything else
-that lives elsewhere under ~/.claude/ — or under future agents' directories
-(e.g. ~/.gemini/...).
-
-Both source and destination paths support:
-  - ${AGENT_SKILLS_REPO}  (auto-resolved to this repo's root)
-  - any environment variable via ${VAR}
-  - a leading ~
-
-The script:
-  - Symlinks each entry into its destination, creating parent dirs as needed.
-  - Refuses to overwrite a non-symlink at the destination.
-  - Tracks every destination it created in
-    <skills_target>/.agent-skills-state.json so swapping manifests removes
-    stale symlinks even when they pointed at paths outside this repo.
+`skills` is linked into the Antigravity skills target directory (~/.gemini/antigravity-cli/skills).
+`links` are general links linked by both Claude and agy.
+`agy_links` are Antigravity-specific links.
 """
 
 from __future__ import annotations
@@ -47,7 +49,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-DEFAULT_SKILLS_TARGET = Path.home() / ".claude" / "skills"
+DEFAULT_SKILLS_TARGET = Path.home() / ".gemini" / "antigravity-cli" / "skills"
 STATE_FILE_NAME = ".agent-skills-state.json"
 
 
@@ -115,7 +117,7 @@ def collect_desired(manifest: dict, skills_target: Path) -> list[tuple[str, Path
         seen.add(dst)
         out.append((label, src, dst))
 
-    for entry in manifest.get("claude_links", []):
+    for entry in manifest.get("agy_links", []):
         src = expand_path(entry["src"])
         dst = expand_path(entry["dst"])
         label = entry.get("label") or dst.name
@@ -127,31 +129,31 @@ def collect_desired(manifest: dict, skills_target: Path) -> list[tuple[str, Path
     return out
 
 
-def offer_claude(failures: list[str]) -> None:
-    """If claude is on PATH, offer to run it with the failure context."""
-    if not shutil.which("claude"):
+def offer_agy(failures: list[str]) -> None:
+    """If agy is on PATH, offer to run it with the failure context."""
+    if not shutil.which("agy"):
         return
     if not sys.stdin.isatty():
         return
     lines = "\n".join(f"  - {f}" for f in failures)
     prompt = (
-        f"The sync-claude-code script failed with the following problems:\n"
+        f"The sync-agy script failed with the following problems:\n"
         f"{lines}\n"
         f"Please help me fix them."
     )
-    print(f"\nRun claude to fix this? [y/N] ", end="", flush=True)
+    print(f"\nRun agy to fix this? [y/N] ", end="", flush=True)
     try:
         answer = input().strip().lower()
     except (EOFError, KeyboardInterrupt):
         print()
         return
     if answer == "y":
-        os.execvp("claude", ["claude", prompt])
+        os.execvp("agy", ["agy", prompt])
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(
-        description="Sync agent state from a manifest into the local filesystem.",
+        description="Sync agent state from a manifest into local Antigravity (agy) directories.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     ap.add_argument("--manifest", "-m",
@@ -262,7 +264,7 @@ def main() -> int:
     save_state(state_path, manifest_name, final)
 
     if failures:
-        offer_claude(failures)
+        offer_agy(failures)
 
     return 1 if had_error else 0
 
