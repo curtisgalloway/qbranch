@@ -248,6 +248,18 @@ def main() -> int:
     if not actions:
         print("  (nothing to do)")
 
+    manifest_skill_srcs = {
+        expand_path(e["path"]).resolve()
+        for e in manifest.get("skills", [])
+    }
+    unsynced = sorted(
+        child.name
+        for child in (REPO / "skills").iterdir()
+        if child.is_dir() and child.resolve() not in manifest_skill_srcs
+    )
+    if unsynced:
+        print(f"not in manifest: {', '.join(unsynced)}")
+
     print()
     print(f"manifest={manifest_name}  desired={len(desired_dsts)}  "
           f"skills_target={skills_target}")
