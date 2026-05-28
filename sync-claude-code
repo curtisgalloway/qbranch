@@ -168,6 +168,34 @@ def offer_claude(failures: list[str]) -> None:
         os.execvp("claude", ["claude", prompt])
 
 
+def add_skill_to_manifest(manifest_name: str, skill_name: str) -> bool:
+    """Add skill_name to manifest. Returns True if manifest was modified."""
+    p = REPO / "manifests" / f"{manifest_name}.json"
+    manifest = json.loads(p.read_text())
+    existing = {e["name"] for e in manifest.get("skills", [])}
+    if skill_name in existing:
+        return False
+    manifest.setdefault("skills", []).append({
+        "name": skill_name,
+        "path": f"${{AGENT_SKILLS_REPO}}/skills/{skill_name}",
+    })
+    p.write_text(json.dumps(manifest, indent=2) + "\n")
+    return True
+
+
+def remove_skill_from_manifest(manifest_name: str, skill_name: str) -> bool:
+    """Remove skill_name from manifest. Returns True if manifest was modified."""
+    p = REPO / "manifests" / f"{manifest_name}.json"
+    manifest = json.loads(p.read_text())
+    before = manifest.get("skills", [])
+    after = [e for e in before if e.get("name") != skill_name]
+    if len(after) == len(before):
+        return False
+    manifest["skills"] = after
+    p.write_text(json.dumps(manifest, indent=2) + "\n")
+    return True
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description="Sync agent state from a manifest into the local filesystem.",
@@ -185,12 +213,62 @@ def main() -> int:
                     help="Print plan without changing the filesystem.")
     ap.add_argument("--list", action="store_true",
                     help="List available manifests and exit.")
+    ap.add_argument("--add-skill", "-a", metavar="SKILL",
+                    help="Add SKILL to the target manifest(s) and exit. "
+                         "Path defaults to ${AGENT_SKILLS_REPO}/skills/SKILL.")
+    ap.add_argument("--remove-skill", "-r", metavar="SKILL",
+                    help="Remove SKILL from the target manifest(s) and exit.")
+    ap.add_argument("--all", dest="all_manifests", action="store_true",
+                    help="With --add-skill/--remove-skill: apply to every manifest "
+                         "in manifests/. Prints a reminder to sync each machine afterwards.")
     args = ap.parse_args()
 
     if args.list:
         for n in list_manifests():
             print(n)
         return 0
+
+    if args.add_skill and args.remove_skill:
+        sys.exit("--add-skill and --remove-skill are mutually exclusive")
+
+    if args.add_skill or args.remove_skill:
+        adding = bool(args.add_skill)
+        skill_name = args.add_skill if adding else args.remove_skill
+        fn = add_skill_to_manifest if adding else remove_skill_from_manifest
+
+        if adding:
+            skill_dir = REPO / "skills" / skill_name
+            if not skill_dir.is_dir():
+                print(f"warning: {skill_dir} not found — adding anyway")
+
+        if args.all_manifests:
+            targets = list_manifests()
+            if not targets:
+                sys.exit("no manifests found")
+            for mname in targets:
+                changed = fn(mname, skill_name)
+                if adding:
+                    status = "added" if changed else "already present"
+                else:
+                    status = "removed" if changed else "not present"
+                print(f"  {status:<15}  {mname}")
+            print(f"\nRemember to run sync-claude-code on each machine to apply.")
+            return 0
+        else:
+            state_path = Path(args.skills_target).expanduser() / STATE_FILE_NAME
+            state = load_state(state_path)
+            manifest_name = args.manifest or state.get("manifest") or "default"
+            changed = fn(manifest_name, skill_name)
+            if adding:
+                verb, already = "added to", f"already in"
+            else:
+                verb, already = "removed from", "not in"
+            if changed:
+                print(f"{skill_name!r} {verb} manifest '{manifest_name}'")
+                print(f"Run sync-claude-code to apply.")
+            else:
+                print(f"{skill_name!r} {already} manifest '{manifest_name}'")
+            return 0
 
     skills_target = Path(args.skills_target).expanduser()
     skills_target.mkdir(parents=True, exist_ok=True)
