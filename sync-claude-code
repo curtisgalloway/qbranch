@@ -7,7 +7,9 @@ A manifest is a JSON file at manifests/<name>.json with this shape:
       "name": "ozone",
       "description": "...",
       "skills": [
-        { "name": "learn", "path": "${AGENT_SKILLS_REPO}/skills/learn" }
+        { "name": "learn", "path": "${AGENT_SKILLS_REPO}/skills/learn" },
+        { "name": "paniolo", "repo": "git@github.com:user/paniolo.git",
+          "path": "skills/paniolo" }
       ],
       "links": [
         { "src": "${AGENT_SKILLS_REPO}/claude-code/CLAUDE.md",
@@ -23,7 +25,16 @@ destination. Use `links` to sync CLAUDE.md, hooks, settings, or anything else
 that lives elsewhere under ~/.claude/ — or under future agents' directories
 (e.g. ~/.gemini/...).
 
-Both source and destination paths support:
+Skills entries support two source forms:
+  - path-based:  { "name": "...", "path": "<local-path>" }
+  - repo-based:  { "name": "...", "repo": "<git-url>", "path": "<repo-relative-path>" }
+
+For repo-based entries the script looks up ~/src/<repo-name> first (by
+convention); if that directory is a git checkout it is used directly.
+Otherwise the repo is cloned (and kept updated) under
+~/.claude/skill-repos/<repo-name>/.
+
+Both local path and dst fields support:
   - ${AGENT_SKILLS_REPO}  (auto-resolved to this repo's root)
   - any environment variable via ${VAR}
   - a leading ~
@@ -42,6 +53,7 @@ import argparse
 import json
 import os
 import shutil
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -51,12 +63,106 @@ DEFAULT_SKILLS_TARGET = Path.home() / ".claude" / "skills"
 STATE_FILE_NAME = ".agent-skills-state.json"
 PUBLIC_SKILLS_REPO = Path.home() / "src" / "public-skills"
 PUBLIC_SKILLS_DIR = PUBLIC_SKILLS_REPO / "skills"
+SKILL_REPOS_CACHE = Path.home() / ".claude" / "skill-repos"
 
 
 def expand_path(raw: str) -> Path:
     s = raw.replace("${AGENT_SKILLS_REPO}", str(REPO))
     s = os.path.expandvars(s)
     return Path(s).expanduser()
+
+
+def repo_name_from_url(url: str) -> str:
+    """Extract 'paniolo' from 'git@github.com:user/paniolo.git'."""
+    name = url.rstrip("/").split("/")[-1]
+    if name.endswith(".git"):
+        name = name[:-4]
+    return name
+
+
+def resolve_repo_local(repo_url: str) -> Path:
+    """Return the local root of repo_url, cloning if necessary.
+
+    Checks ~/src/<name> first (convention); if that's a git checkout it is
+    used as-is. Otherwise clones into ~/.claude/skill-repos/<name>/ and pulls
+    on every subsequent sync.
+    """
+    name = repo_name_from_url(repo_url)
+
+    local = Path.home() / "src" / name
+    if local.is_dir() and (local / ".git").exists():
+        return local
+
+    cache = SKILL_REPOS_CACHE / name
+    if cache.is_dir() and (cache / ".git").exists():
+        result = subprocess.run(
+            ["git", "-C", str(cache), "pull", "--ff-only"],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            print(f"warning: git pull failed for {name}: {result.stderr.strip()}")
+    else:
+        SKILL_REPOS_CACHE.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "clone", repo_url, str(cache)], check=True)
+    return cache
+
+
+def resolve_skill_src(entry: dict) -> Path:
+    """Return the source Path for a skills entry (path-based or repo-based)."""
+    if "repo" in entry:
+        return resolve_repo_local(entry["repo"]) / entry["path"]
+    return expand_path(entry["path"])
+
+
+def parse_git_skill_url(arg: str) -> tuple[str, str, str]:
+    """Parse a git:// shorthand → (skill_name, repo_url, skill_path).
+
+    Two forms:
+      Short:  git://<local-name>[/<path>]
+        First segment has no dot → look up ~/src/<name> for the remote URL.
+        git://paniolo/skills/paniolo
+          → name=paniolo  repo=<origin of ~/src/paniolo>  path=skills/paniolo
+
+      Full:   git://<host>/<owner>/<repo>[/<path>]
+        First segment contains a dot → construct git@host:owner/repo.git.
+        git://github.com/user/paniolo/skills/hdmicap
+          → name=hdmicap  repo=git@github.com:user/paniolo.git  path=skills/hdmicap
+    """
+    rest = arg[len("git://"):]
+    parts = rest.split("/")
+
+    if "." not in parts[0]:
+        repo_name = parts[0]
+        path_parts = parts[1:]
+        local = Path.home() / "src" / repo_name
+        if not local.is_dir() or not (local / ".git").exists():
+            sys.exit(
+                f"git:// short form: ~/src/{repo_name} not found or not a git repo\n"
+                f"use full form: git://<host>/<owner>/<repo>[/<path>]"
+            )
+        result = subprocess.run(
+            ["git", "-C", str(local), "remote", "get-url", "origin"],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            sys.exit(f"could not get remote URL for ~/src/{repo_name}: {result.stderr.strip()}")
+        repo_url = result.stdout.strip()
+        skill_path = "/".join(path_parts) if path_parts else f"skills/{repo_name}"
+        skill_name = path_parts[-1] if path_parts else repo_name
+        return skill_name, repo_url, skill_path
+
+    if len(parts) < 3:
+        sys.exit(
+            f"invalid git:// skill URL: {arg!r}\n"
+            f"expected: git://<host>/<owner>/<repo>[/<path/to/skill>]"
+        )
+    host, owner, repo_part = parts[0], parts[1], parts[2]
+    path_parts = parts[3:]
+    repo_name = repo_part[:-4] if repo_part.endswith(".git") else repo_part
+    repo_url = f"git@{host}:{owner}/{repo_name}.git"
+    skill_path = "/".join(path_parts) if path_parts else f"skills/{repo_name}"
+    skill_name = path_parts[-1] if path_parts else repo_name
+    return skill_name, repo_url, skill_path
 
 
 def load_manifest(name: str) -> dict:
@@ -101,7 +207,7 @@ def collect_desired(manifest: dict, skills_target: Path) -> list[tuple[str, Path
 
     for entry in manifest.get("skills", []):
         name = entry["name"]
-        src = expand_path(entry["path"])
+        src = resolve_skill_src(entry)
         dst = skills_target / name
         if dst in seen:
             sys.exit(f"duplicate destination in manifest: {dst}")
@@ -168,17 +274,30 @@ def offer_claude(failures: list[str]) -> None:
         os.execvp("claude", ["claude", prompt])
 
 
-def add_skill_to_manifest(manifest_name: str, skill_name: str) -> bool:
+def add_skill_to_manifest(
+    manifest_name: str,
+    skill_name: str,
+    repo: str | None = None,
+    skill_path: str | None = None,
+) -> bool:
     """Add skill_name to manifest. Returns True if manifest was modified."""
     p = REPO / "manifests" / f"{manifest_name}.json"
     manifest = json.loads(p.read_text())
     existing = {e["name"] for e in manifest.get("skills", [])}
     if skill_name in existing:
         return False
-    manifest.setdefault("skills", []).append({
-        "name": skill_name,
-        "path": f"${{AGENT_SKILLS_REPO}}/skills/{skill_name}",
-    })
+    if repo:
+        entry: dict = {
+            "name": skill_name,
+            "repo": repo,
+            "path": skill_path or f"skills/{skill_name}",
+        }
+    else:
+        entry = {
+            "name": skill_name,
+            "path": f"${{AGENT_SKILLS_REPO}}/skills/{skill_name}",
+        }
+    manifest.setdefault("skills", []).append(entry)
     p.write_text(json.dumps(manifest, indent=2) + "\n")
     return True
 
@@ -218,6 +337,13 @@ def main() -> int:
                          "Path defaults to ${AGENT_SKILLS_REPO}/skills/SKILL.")
     ap.add_argument("--remove-skill", "-r", metavar="SKILL",
                     help="Remove SKILL from the target manifest(s) and exit.")
+    ap.add_argument("--repo", metavar="URL",
+                    help="Git repo URL for the skill (used with --add-skill). "
+                         "On sync, ~/src/<repo-name> is checked first; "
+                         "otherwise the repo is cloned to ~/.claude/skill-repos/.")
+    ap.add_argument("--skill-path", metavar="PATH",
+                    help="Path within the repo (used with --add-skill --repo). "
+                         "Defaults to skills/<skill-name>.")
     ap.add_argument("--all", dest="all_manifests", action="store_true",
                     help="With --add-skill/--remove-skill: apply to every manifest "
                          "in manifests/. Prints a reminder to sync each machine afterwards.")
@@ -234,19 +360,39 @@ def main() -> int:
     if args.add_skill or args.remove_skill:
         adding = bool(args.add_skill)
         skill_name = args.add_skill if adding else args.remove_skill
-        fn = add_skill_to_manifest if adding else remove_skill_from_manifest
+
+        repo_url = args.repo
+        skill_path_arg = args.skill_path
+
+        if adding and skill_name.startswith("git://"):
+            skill_name, repo_url, skill_path_arg = parse_git_skill_url(skill_name)
 
         if adding:
-            skill_dir = REPO / "skills" / skill_name
-            if not skill_dir.is_dir():
-                print(f"warning: {skill_dir} not found — adding anyway")
+            if repo_url:
+                local_root = Path.home() / "src" / repo_name_from_url(repo_url)
+                if not local_root.is_dir():
+                    print(f"note: {local_root} not found — will clone on sync")
+            else:
+                skill_dir = REPO / "skills" / skill_name
+                if not skill_dir.is_dir():
+                    print(f"warning: {skill_dir} not found — adding anyway")
+
+        add_kwargs = {}
+        if adding and repo_url:
+            add_kwargs["repo"] = repo_url
+            add_kwargs["skill_path"] = skill_path_arg
+
+        def fn_with_kwargs(mname: str, sname: str) -> bool:
+            if adding:
+                return add_skill_to_manifest(mname, sname, **add_kwargs)
+            return remove_skill_from_manifest(mname, sname)
 
         if args.all_manifests:
             targets = list_manifests()
             if not targets:
                 sys.exit("no manifests found")
             for mname in targets:
-                changed = fn(mname, skill_name)
+                changed = fn_with_kwargs(mname, skill_name)
                 if adding:
                     status = "added" if changed else "already present"
                 else:
@@ -258,9 +404,9 @@ def main() -> int:
             state_path = Path(args.skills_target).expanduser() / STATE_FILE_NAME
             state = load_state(state_path)
             manifest_name = args.manifest or state.get("manifest") or "default"
-            changed = fn(manifest_name, skill_name)
+            changed = fn_with_kwargs(manifest_name, skill_name)
             if adding:
-                verb, already = "added to", f"already in"
+                verb, already = "added to", "already in"
             else:
                 verb, already = "removed from", "not in"
             if changed:
@@ -329,6 +475,7 @@ def main() -> int:
     manifest_skill_srcs = {
         expand_path(e["path"]).resolve()
         for e in manifest.get("skills", [])
+        if "repo" not in e
     }
     unsynced = sorted(
         child.name
