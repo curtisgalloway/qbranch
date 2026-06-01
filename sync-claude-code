@@ -375,7 +375,8 @@ def main() -> int:
             else:
                 skill_dir = REPO / "skills" / skill_name
                 if not skill_dir.is_dir():
-                    print(f"warning: {skill_dir} not found — adding anyway")
+                    print(f"error: {skill_dir} not found")
+                    return 2
 
         add_kwargs = {}
         if adding and repo_url:
