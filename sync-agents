@@ -1,5 +1,20 @@
 #!/usr/bin/env python3
-"""Sync agent state into the local agent's directories based on a JSON manifest.
+"""Sync agent state into the local filesystem based on a JSON manifest.
+
+The sync has two parts:
+
+  1. Generic (always): every `skills` entry — plus auto-discovered skills
+     from ~/src/public-skills/skills/ — is symlinked into the agent-neutral
+     skills directory ~/.agents/skills/ (override with --skills-target).
+     `links` entries whose destination is outside ~/.claude/ are also
+     applied here.
+
+  2. Claude Code (only if Claude is installed — `claude` on PATH or
+     ~/.claude/ present): `links` entries with destinations under ~/.claude/
+     (CLAUDE.md, settings.json, hooks, ...) are applied, and ~/.claude/skills
+     is symlinked to the generic skills directory so Claude sees the same
+     skill set. If ~/.claude/skills is still a real directory from an older
+     sync, it is converted automatically once stale symlinks are cleaned up.
 
 A manifest is a JSON file at manifests/<name>.json with this shape:
 
@@ -21,9 +36,8 @@ A manifest is a JSON file at manifests/<name>.json with this shape:
 
 `skills` is shorthand for "link this into the skills target directory under
 the entry's name". `links` is the general form: any source linked to any
-destination. Use `links` to sync CLAUDE.md, hooks, settings, or anything else
-that lives elsewhere under ~/.claude/ — or under future agents' directories
-(e.g. ~/.gemini/...).
+destination — agent harness state (settings, hooks, instruction files) or
+anything else.
 
 Skills entries support two source forms:
   - path-based:  { "name": "...", "path": "<local-path>" }
@@ -32,7 +46,7 @@ Skills entries support two source forms:
 For repo-based entries the script looks up ~/src/<repo-name> first (by
 convention); if that directory is a git checkout it is used directly.
 Otherwise the repo is cloned (and kept updated) under
-~/.claude/skill-repos/<repo-name>/.
+~/.agents/skill-repos/<repo-name>/.
 
 Both local path and dst fields support:
   - ${AGENT_SKILLS_REPO}  (auto-resolved to this repo's root)
@@ -59,17 +73,32 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-DEFAULT_SKILLS_TARGET = Path.home() / ".claude" / "skills"
+DEFAULT_SKILLS_TARGET = Path.home() / ".agents" / "skills"
 STATE_FILE_NAME = ".agent-skills-state.json"
 PUBLIC_SKILLS_REPO = Path.home() / "src" / "public-skills"
 PUBLIC_SKILLS_DIR = PUBLIC_SKILLS_REPO / "skills"
-SKILL_REPOS_CACHE = Path.home() / ".claude" / "skill-repos"
+SKILL_REPOS_CACHE = Path.home() / ".agents" / "skill-repos"
+LEGACY_SKILL_REPOS_CACHE = Path.home() / ".claude" / "skill-repos"
+CLAUDE_DIR = Path.home() / ".claude"
+CLAUDE_SKILLS_LINK = CLAUDE_DIR / "skills"
 
 
 def expand_path(raw: str) -> Path:
     s = raw.replace("${AGENT_SKILLS_REPO}", str(REPO))
     s = os.path.expandvars(s)
     return Path(s).expanduser()
+
+
+def claude_installed() -> bool:
+    return shutil.which("claude") is not None or CLAUDE_DIR.is_dir()
+
+
+def is_claude_path(p: Path) -> bool:
+    try:
+        p.relative_to(CLAUDE_DIR)
+        return True
+    except ValueError:
+        return False
 
 
 def repo_name_from_url(url: str) -> str:
@@ -84,8 +113,9 @@ def resolve_repo_local(repo_url: str) -> Path:
     """Return the local root of repo_url, cloning if necessary.
 
     Checks ~/src/<name> first (convention); if that's a git checkout it is
-    used as-is. Otherwise clones into ~/.claude/skill-repos/<name>/ and pulls
-    on every subsequent sync.
+    used as-is. Otherwise clones into ~/.agents/skill-repos/<name>/ and pulls
+    on every subsequent sync. A pre-existing clone in the legacy
+    ~/.claude/skill-repos/<name>/ location is honored.
     """
     name = repo_name_from_url(repo_url)
 
@@ -94,6 +124,10 @@ def resolve_repo_local(repo_url: str) -> Path:
         return local
 
     cache = SKILL_REPOS_CACHE / name
+    legacy_cache = LEGACY_SKILL_REPOS_CACHE / name
+    if not (cache.is_dir() and (cache / ".git").exists()) \
+            and legacy_cache.is_dir() and (legacy_cache / ".git").exists():
+        cache = legacy_cache
     if cache.is_dir() and (cache / ".git").exists():
         result = subprocess.run(
             ["git", "-C", str(cache), "pull", "--ff-only"],
@@ -179,6 +213,11 @@ def list_manifests() -> list[str]:
 
 
 def load_state(state_path: Path) -> dict:
+    """Load sync state, falling back to the legacy ~/.claude/skills location."""
+    if not state_path.exists():
+        legacy = CLAUDE_SKILLS_LINK / STATE_FILE_NAME
+        if not CLAUDE_SKILLS_LINK.is_symlink() and legacy.is_file():
+            state_path = legacy
     if not state_path.exists():
         return {"manifest": None, "links": []}
     try:
@@ -200,9 +239,12 @@ def save_state(state_path: Path, manifest_name: str, links: list[Path]) -> None:
     }, indent=2) + "\n")
 
 
-def collect_desired(manifest: dict, skills_target: Path) -> list[tuple[str, Path, Path]]:
-    """Return (label, src, dst) tuples from the manifest."""
+def collect_desired(
+    manifest: dict, skills_target: Path, claude_ok: bool
+) -> tuple[list[tuple[str, Path, Path]], list[str]]:
+    """Return ((label, src, dst) tuples, skipped-entry notes) from the manifest."""
     out: list[tuple[str, Path, Path]] = []
+    skipped: list[str] = []
     seen: set[Path] = set()
 
     for entry in manifest.get("skills", []):
@@ -218,12 +260,19 @@ def collect_desired(manifest: dict, skills_target: Path) -> list[tuple[str, Path
         src = expand_path(entry["src"])
         dst = expand_path(entry["dst"])
         label = entry.get("label") or dst.name
+        if not claude_ok and is_claude_path(dst):
+            skipped.append(f"{label}: {dst} (Claude not installed)")
+            continue
         if dst in seen:
             sys.exit(f"duplicate destination in manifest: {dst}")
         seen.add(dst)
         out.append((label, src, dst))
 
-    return out
+    # Claude reads skills from ~/.claude/skills — point it at the generic dir.
+    if claude_ok and CLAUDE_SKILLS_LINK != skills_target:
+        out.append(("claude-skills", skills_target, CLAUDE_SKILLS_LINK))
+
+    return out, skipped
 
 
 def collect_public_skills(
@@ -260,7 +309,7 @@ def offer_claude(failures: list[str]) -> None:
         return
     lines = "\n".join(f"  - {f}" for f in failures)
     prompt = (
-        f"The sync-claude-code script failed with the following problems:\n"
+        f"The sync-agents script failed with the following problems:\n"
         f"{lines}\n"
         f"Please help me fix them."
     )
@@ -315,6 +364,25 @@ def remove_skill_from_manifest(manifest_name: str, skill_name: str) -> bool:
     return True
 
 
+def migrate_claude_skills_dir(dst: Path, src: Path) -> str | None:
+    """Convert a real ~/.claude/skills directory into a symlink to src.
+
+    Stale symlinks inside have already been removed by the cleanup pass.
+    Returns an error message, or None on success.
+    """
+    for junk in (dst / STATE_FILE_NAME, dst / ".DS_Store"):
+        if junk.is_file():
+            junk.unlink()
+    try:
+        dst.rmdir()
+    except OSError:
+        leftover = ", ".join(sorted(p.name for p in dst.iterdir()))
+        return (f"{dst} is a directory and still contains: {leftover} — "
+                f"move these aside and re-run")
+    dst.symlink_to(src)
+    return None
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description="Sync agent state from a manifest into the local filesystem.",
@@ -340,7 +408,7 @@ def main() -> int:
     ap.add_argument("--repo", metavar="URL",
                     help="Git repo URL for the skill (used with --add-skill). "
                          "On sync, ~/src/<repo-name> is checked first; "
-                         "otherwise the repo is cloned to ~/.claude/skill-repos/.")
+                         "otherwise the repo is cloned to ~/.agents/skill-repos/.")
     ap.add_argument("--skill-path", metavar="PATH",
                     help="Path within the repo (used with --add-skill --repo). "
                          "Defaults to skills/<skill-name>.")
@@ -399,7 +467,7 @@ def main() -> int:
                 else:
                     status = "removed" if changed else "not present"
                 print(f"  {status:<15}  {mname}")
-            print(f"\nRemember to run sync-claude-code on each machine to apply.")
+            print(f"\nRemember to run sync-agents on each machine to apply.")
             return 0
         else:
             state_path = Path(args.skills_target).expanduser() / STATE_FILE_NAME
@@ -412,20 +480,30 @@ def main() -> int:
                 verb, already = "removed from", "not in"
             if changed:
                 print(f"{skill_name!r} {verb} manifest '{manifest_name}'")
-                print(f"Run sync-claude-code to apply.")
+                print(f"Run sync-agents to apply.")
             else:
                 print(f"{skill_name!r} {already} manifest '{manifest_name}'")
             return 0
 
     skills_target = Path(args.skills_target).expanduser()
-    skills_target.mkdir(parents=True, exist_ok=True)
+    fresh_target = skills_target.is_symlink()
+    if fresh_target:
+        # e.g. an old ~/.agents/skills → ~/.claude/skills link; the generic
+        # dir is the primary now, so it must be a real directory.
+        print(f"note: {skills_target} was a symlink -> "
+              f"{skills_target.readlink()} — replacing with a real directory")
+        if not args.dry_run:
+            skills_target.unlink()
+    if not args.dry_run:
+        skills_target.mkdir(parents=True, exist_ok=True)
     state_path = skills_target / STATE_FILE_NAME
 
     state = load_state(state_path)
     manifest_name = args.manifest or state.get("manifest") or "default"
     manifest = load_manifest(manifest_name)
+    claude_ok = claude_installed()
 
-    desired = collect_desired(manifest, skills_target)
+    desired, skipped = collect_desired(manifest, skills_target, claude_ok)
     taken_dsts = {dst for _, _, dst in desired}
     public_entries, public_warnings = collect_public_skills(skills_target, taken_dsts)
     desired.extend(public_entries)
@@ -437,6 +515,8 @@ def main() -> int:
         )
     for w in public_warnings:
         print(f"warning: {w}")
+    for s in skipped:
+        print(f"skipped: {s}")
 
     desired_dsts = {dst for _, _, dst in desired}
     previous_dsts = {Path(p) for p in state.get("links", [])}
@@ -449,8 +529,13 @@ def main() -> int:
                             f"-> {dst.readlink()} (not in manifest)"))
 
     for label, src, dst in desired:
-        if not src.exists():
+        if not src.exists() and not (args.dry_run and src == skills_target):
             actions.append(("MISS", label, src, dst, "source missing"))
+            continue
+        if fresh_target and skills_target in dst.parents:
+            # skills_target was just (or, on dry-run, would be) replaced with
+            # an empty directory — nothing under it can pre-exist.
+            actions.append(("link", label, src, dst, ""))
             continue
         if dst.is_symlink():
             cur_raw = Path(os.readlink(dst))
@@ -459,6 +544,9 @@ def main() -> int:
                 actions.append(("ok", label, src, dst, ""))
             else:
                 actions.append(("relink", label, src, dst, f"was: {cur_raw}"))
+        elif dst.is_dir() and dst == CLAUDE_SKILLS_LINK:
+            actions.append(("migrate", label, src, dst,
+                            "dir -> symlink (after stale links removed)"))
         elif dst.exists():
             actions.append(("WARN", label, src, dst,
                             "non-symlink at destination — leaving alone"))
@@ -488,7 +576,7 @@ def main() -> int:
 
     print()
     print(f"manifest={manifest_name}  desired={len(desired_dsts)}  "
-          f"skills_target={skills_target}")
+          f"skills_target={skills_target}  claude={'yes' if claude_ok else 'no'}")
 
     if args.dry_run:
         print("(dry run — no changes made)")
@@ -512,6 +600,14 @@ def main() -> int:
                 final.append(dst)
             elif op == "ok":
                 final.append(dst)
+            elif op == "migrate":
+                msg = migrate_claude_skills_dir(dst, src)
+                if msg:
+                    print(f"ERROR: {label}: {msg}", file=sys.stderr)
+                    failures.append(f"{label}: {msg}")
+                    had_error = True
+                else:
+                    final.append(dst)
             elif op == "WARN":
                 msg = f"{label}: non-symlink at {dst} — refusing to overwrite"
                 print(f"ERROR: {msg}", file=sys.stderr)
