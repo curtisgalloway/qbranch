@@ -11,10 +11,12 @@ The sync has two parts:
 
   2. Claude Code (only if Claude is installed — `claude` on PATH or
      ~/.claude/ present): `links` entries with destinations under ~/.claude/
-     (CLAUDE.md, settings.json, hooks, ...) are applied, and ~/.claude/skills
-     is symlinked to the generic skills directory so Claude sees the same
-     skill set. If ~/.claude/skills is still a real directory from an older
-     sync, it is converted automatically once stale symlinks are cleaned up.
+     (CLAUDE.md, hooks, ...) are applied, ~/.claude/skills is symlinked to
+     the generic skills directory so Claude sees the same skill set, and the
+     `claude_settings` policy fragments are MERGED into the app-owned
+     ~/.claude/settings.json (see below). If ~/.claude/skills is still a
+     real directory from an older sync, it is converted automatically once
+     stale symlinks are cleaned up.
 
 A manifest is a JSON file at manifests/<name>.json with this shape:
 
@@ -31,13 +33,30 @@ A manifest is a JSON file at manifests/<name>.json with this shape:
           "dst": "${HOME}/.claude/CLAUDE.md" },
         { "src": "${AGENT_SKILLS_REPO}/claude-code/hooks/permission-notify.sh",
           "dst": "${HOME}/.claude/hooks/permission-notify.sh" }
+      ],
+      "claude_settings": [
+        "${AGENT_SKILLS_REPO}/claude-code/settings.json",
+        "${AGENT_SKILLS_REPO}/claude-code/settings/hosts/ozone.json"
       ]
     }
 
 `skills` is shorthand for "link this into the skills target directory under
 the entry's name". `links` is the general form: any source linked to any
-destination — agent harness state (settings, hooks, instruction files) or
-anything else.
+destination — agent harness state (hooks, instruction files) or anything
+else.
+
+`claude_settings` lists git-tracked policy fragments (shared base first,
+host fragment after) that are merged in order — dicts recurse, lists union,
+later scalars win — and then imposed on the live ~/.claude/settings.json.
+That file is deliberately NOT a symlink: Claude Code rewrites it at will
+(theme, effortLevel, enabledPlugins, notification prefs), so the app owns
+the file and the sync owns only the policy keys inside it. Policy list
+items are added if missing, policy scalars overwrite, app-owned keys are
+untouched. The state file remembers the applied policy snapshot, so a key
+removed from the fragments is retracted from the live file on the next
+sync (unless the app changed its value in the meantime). Claude Code does
+NOT read a user-level ~/.claude/settings.local.json (verified empirically,
+v2.1.167) — that's why merging, not file-splitting, is used here.
 
 Skills entries support two source forms:
   - path-based:  { "name": "...", "path": "<local-path>" }
@@ -69,6 +88,7 @@ import os
 import shutil
 import subprocess
 import sys
+from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -81,6 +101,7 @@ SKILL_REPOS_CACHE = Path.home() / ".agents" / "skill-repos"
 LEGACY_SKILL_REPOS_CACHE = Path.home() / ".claude" / "skill-repos"
 CLAUDE_DIR = Path.home() / ".claude"
 CLAUDE_SKILLS_LINK = CLAUDE_DIR / "skills"
+CLAUDE_SETTINGS_FILE = CLAUDE_DIR / "settings.json"
 
 
 def expand_path(raw: str) -> Path:
@@ -231,11 +252,13 @@ def load_state(state_path: Path) -> dict:
     return data
 
 
-def save_state(state_path: Path, manifest_name: str, links: list[Path]) -> None:
+def save_state(state_path: Path, manifest_name: str, links: list[Path],
+               settings_applied: dict | None) -> None:
     state_path.write_text(json.dumps({
         "manifest": manifest_name,
         "linked_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "links": sorted({str(p) for p in links}),
+        "claude_settings_applied": settings_applied or {},
     }, indent=2) + "\n")
 
 
@@ -362,6 +385,139 @@ def remove_skill_from_manifest(manifest_name: str, skill_name: str) -> bool:
     manifest["skills"] = after
     p.write_text(json.dumps(manifest, indent=2) + "\n")
     return True
+
+
+def merge_fragments(base: dict, overlay: dict) -> dict:
+    """Merge a settings fragment onto base policy.
+
+    Dicts merge recursively, lists union (base order first), scalars from
+    the overlay win.
+    """
+    out = dict(base)
+    for k, v in overlay.items():
+        cur = out.get(k)
+        if isinstance(cur, dict) and isinstance(v, dict):
+            out[k] = merge_fragments(cur, v)
+        elif isinstance(cur, list) and isinstance(v, list):
+            out[k] = cur + [i for i in v if i not in cur]
+        else:
+            out[k] = deepcopy(v)
+    return out
+
+
+def assert_settings(live: dict, policy: dict) -> None:
+    """Impose policy onto live settings in place.
+
+    Policy scalars overwrite, policy list items are appended if missing
+    (app-added items are kept), dicts recurse. Keys the policy doesn't
+    mention are left alone — they belong to the app.
+    """
+    for k, v in policy.items():
+        cur = live.get(k)
+        if isinstance(v, dict) and isinstance(cur, dict):
+            assert_settings(cur, v)
+        elif isinstance(v, list) and isinstance(cur, list):
+            for item in v:
+                if item not in cur:
+                    cur.append(deepcopy(item))
+        else:
+            live[k] = deepcopy(v)
+
+
+def retract_settings(live: dict, old: dict, new: dict) -> None:
+    """Remove what the old policy asserted but the new one no longer does.
+
+    List items are removed exactly; scalars only if the live value still
+    equals what old policy set (a locally changed value is app state now);
+    dicts recurse and are pruned when emptied.
+    """
+    for k, old_v in old.items():
+        if k not in live:
+            continue
+        live_v = live[k]
+        new_v = new.get(k)
+        if isinstance(old_v, dict) and isinstance(live_v, dict):
+            retract_settings(live_v, old_v,
+                             new_v if isinstance(new_v, dict) else {})
+            if not live_v and not isinstance(new_v, dict):
+                del live[k]
+        elif isinstance(old_v, list) and isinstance(live_v, list):
+            new_items = new_v if isinstance(new_v, list) else []
+            gone = [i for i in old_v if i not in new_items]
+            live[k] = [i for i in live_v if i not in gone]
+            if not live[k] and not new_items:
+                del live[k]
+        elif k not in new and live_v == old_v:
+            del live[k]
+
+
+def sync_claude_settings(
+    manifest: dict, state: dict, dry_run: bool
+) -> tuple[list[str], dict | None, list[str]]:
+    """Merge `claude_settings` fragments into the app-owned ~/.claude/settings.json.
+
+    The live file is never symlinked: the app owns it and freely rewrites
+    it (theme, effortLevel, plugins, ...). This asserts the policy keys
+    from the fragments into it and retracts whatever the previous sync's
+    policy asserted that the current one no longer does. The applied
+    policy snapshot is returned for the state file.
+
+    Returns (notes, applied_policy_or_None, failures).
+    """
+    notes: list[str] = []
+    failures: list[str] = []
+    fragments = manifest.get("claude_settings", [])
+    old_applied = state.get("claude_settings_applied") or {}
+
+    policy: dict = {}
+    for raw in fragments:
+        p = expand_path(raw)
+        if not p.is_file():
+            failures.append(f"settings fragment missing: {p}")
+            return notes, None, failures
+        try:
+            frag = json.loads(p.read_text())
+        except json.JSONDecodeError as e:
+            failures.append(f"settings fragment unparseable: {p}: {e}")
+            return notes, None, failures
+        policy = merge_fragments(policy, frag)
+
+    if not fragments and not old_applied:
+        return notes, {}, failures
+
+    target = CLAUDE_SETTINGS_FILE
+    if target.is_symlink():
+        # Legacy layout: the live file was a symlink into the repo. Capture
+        # its content into a real, app-owned file before merging into it.
+        content = target.resolve().read_text() if target.exists() else "{}\n"
+        notes.append(f"settings: converting symlink -> real file  {target}")
+        if not dry_run:
+            target.unlink()
+            target.write_text(content)
+        live = json.loads(content)
+    elif target.is_file():
+        try:
+            live = json.loads(target.read_text())
+        except json.JSONDecodeError as e:
+            failures.append(f"live settings unparseable, leaving alone: {target}: {e}")
+            return notes, None, failures
+    else:
+        live = {}
+
+    before = json.dumps(live, sort_keys=True)
+    retract_settings(live, old_applied, policy)
+    assert_settings(live, policy)
+    if json.dumps(live, sort_keys=True) != before or not target.exists():
+        verb = "would update" if dry_run else "updated"
+        notes.append(f"settings: {verb} {target} "
+                     f"from {len(fragments)} fragment(s)")
+        if not dry_run:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(json.dumps(live, indent=2) + "\n")
+    else:
+        notes.append(f"settings: {target} up to date "
+                     f"({len(fragments)} fragment(s))")
+    return notes, policy, failures
 
 
 def migrate_claude_skills_dir(dst: Path, src: Path) -> str | None:
@@ -503,6 +659,18 @@ def main() -> int:
     manifest = load_manifest(manifest_name)
     claude_ok = claude_installed()
 
+    # Settings run before link planning: converting a legacy settings.json
+    # symlink into a real file must happen before the stale-link remove pass
+    # evaluates what is and isn't a symlink.
+    settings_notes: list[str] = []
+    settings_failures: list[str] = []
+    applied_policy: dict | None = None
+    if claude_ok:
+        settings_notes, applied_policy, settings_failures = \
+            sync_claude_settings(manifest, state, args.dry_run)
+    elif manifest.get("claude_settings"):
+        settings_notes = ["settings: skipped (Claude not installed)"]
+
     desired, skipped = collect_desired(manifest, skills_target, claude_ok)
     taken_dsts = {dst for _, _, dst in desired}
     public_entries, public_warnings = collect_public_skills(skills_target, taken_dsts)
@@ -517,13 +685,24 @@ def main() -> int:
         print(f"warning: {w}")
     for s in skipped:
         print(f"skipped: {s}")
+    for n in settings_notes:
+        print(f"  {n}")
+    for f in settings_failures:
+        print(f"ERROR: {f}", file=sys.stderr)
 
     desired_dsts = {dst for _, _, dst in desired}
     previous_dsts = {Path(p) for p in state.get("links", [])}
 
+    # The live settings.json is managed by the settings merge, not as a
+    # link — keep the remove pass away from it even if an old state file
+    # still lists it from the symlink era.
+    managed: set[Path] = set()
+    if claude_ok and manifest.get("claude_settings"):
+        managed.add(CLAUDE_SETTINGS_FILE)
+
     actions: list[tuple[str, str, Path | None, Path, str]] = []
 
-    for dst in sorted(previous_dsts - desired_dsts):
+    for dst in sorted(previous_dsts - desired_dsts - managed):
         if dst.is_symlink():
             actions.append(("remove", dst.name, None, dst,
                             f"-> {dst.readlink()} (not in manifest)"))
@@ -580,11 +759,11 @@ def main() -> int:
 
     if args.dry_run:
         print("(dry run — no changes made)")
-        return 0
+        return 1 if settings_failures else 0
 
     final: list[Path] = []
-    had_error = False
-    failures: list[str] = []
+    had_error = bool(settings_failures)
+    failures: list[str] = list(settings_failures)
     for op, label, src, dst, note in actions:
         try:
             if op == "remove":
@@ -624,7 +803,11 @@ def main() -> int:
             failures.append(msg)
             had_error = True
 
-    save_state(state_path, manifest_name, final)
+    if applied_policy is None:
+        # Settings failed or Claude absent: keep the previous snapshot so a
+        # future sync can still retract what an older policy asserted.
+        applied_policy = state.get("claude_settings_applied") or {}
+    save_state(state_path, manifest_name, final, applied_policy)
 
     if failures:
         offer_claude(failures)
