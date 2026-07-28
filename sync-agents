@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Curtis Galloway
+# SPDX-License-Identifier: Apache-2.0
 """Sync agent state into the local filesystem based on a JSON manifest.
 
 The sync has two parts:
