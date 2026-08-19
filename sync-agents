@@ -6,7 +6,8 @@
 The sync has two parts:
 
   1. Generic (always): every `skills` entry — plus auto-discovered skills
-     from ~/src/public-skills/skills/ — is symlinked into the agent-neutral
+     from the public skill repos (~/src/public-skills, ~/src/fuchsia-skills)
+     — is symlinked into the agent-neutral
      skills directory ~/.agents/skills/ (override with --skills-target).
      `links` entries whose destination is outside ~/.claude/ are also
      applied here.
@@ -97,8 +98,13 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 DEFAULT_SKILLS_TARGET = Path.home() / ".agents" / "skills"
 STATE_FILE_NAME = ".agent-skills-state.json"
-PUBLIC_SKILLS_REPO = Path.home() / "src" / "public-skills"
-PUBLIC_SKILLS_DIR = PUBLIC_SKILLS_REPO / "skills"
+# Public skill repos whose skills/ dirs are auto-discovered, in order. A name
+# defined by the manifest wins over any of these; an earlier repo wins over a
+# later one on a name collision between repos.
+PUBLIC_SKILL_REPOS = [
+    Path.home() / "src" / "public-skills",
+    Path.home() / "src" / "fuchsia-skills",
+]
 SKILL_REPOS_CACHE = Path.home() / ".agents" / "skill-repos"
 LEGACY_SKILL_REPOS_CACHE = Path.home() / ".claude" / "skill-repos"
 CLAUDE_DIR = Path.home() / ".claude"
@@ -303,26 +309,31 @@ def collect_desired(
 def collect_public_skills(
     skills_target: Path, taken_dsts: set[Path]
 ) -> tuple[list[tuple[str, Path, Path]], list[str]]:
-    """Implicit skill entries from ~/src/public-skills/skills/.
+    """Implicit skill entries from every repo in PUBLIC_SKILL_REPOS.
 
-    Returns (entries, warnings). Manifest entries win on name collision; the
-    conflicting public-skills entry is skipped and surfaced in `warnings`.
+    Returns (entries, warnings). Manifest entries win on name collision, as
+    does an earlier repo over a later one; the losing entry is skipped and
+    surfaced in `warnings`.
     """
     entries: list[tuple[str, Path, Path]] = []
     warnings: list[str] = []
-    if not PUBLIC_SKILLS_DIR.is_dir():
-        return entries, warnings
-    for child in sorted(PUBLIC_SKILLS_DIR.iterdir()):
-        if not child.is_dir() or not (child / "SKILL.md").exists():
+    claimed = set(taken_dsts)
+    for repo in PUBLIC_SKILL_REPOS:
+        skills_dir = repo / "skills"
+        if not skills_dir.is_dir():
             continue
-        name = child.name
-        dst = skills_target / name
-        if dst in taken_dsts:
-            warnings.append(
-                f"public-skills/{name}: manifest already defines {dst}, skipped"
-            )
-            continue
-        entries.append((name, child, dst))
+        for child in sorted(skills_dir.iterdir()):
+            if not child.is_dir() or not (child / "SKILL.md").exists():
+                continue
+            name = child.name
+            dst = skills_target / name
+            if dst in claimed:
+                warnings.append(
+                    f"{repo.name}/{name}: already defined at {dst}, skipped"
+                )
+                continue
+            claimed.add(dst)
+            entries.append((name, child, dst))
     return entries, warnings
 
 
@@ -678,11 +689,12 @@ def main() -> int:
     public_entries, public_warnings = collect_public_skills(skills_target, taken_dsts)
     desired.extend(public_entries)
 
-    if not PUBLIC_SKILLS_DIR.is_dir():
-        print(
-            f"note: {PUBLIC_SKILLS_REPO} not found — consider cloning it "
-            f"for additional skills"
-        )
+    for repo in PUBLIC_SKILL_REPOS:
+        if not (repo / "skills").is_dir():
+            print(
+                f"note: {repo} not found — consider cloning it "
+                f"for additional skills"
+            )
     for w in public_warnings:
         print(f"warning: {w}")
     for s in skipped:
