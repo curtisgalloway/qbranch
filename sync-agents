@@ -1,0 +1,887 @@
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Curtis Galloway
+# SPDX-License-Identifier: Apache-2.0
+"""Sync agent state into the local filesystem based on a JSON manifest.
+
+The sync has three parts:
+
+  1. Generic (always): every `skills` entry — plus auto-discovered skills
+     from the public skill repos (~/src/public-skills, ~/src/fuchsia-skills)
+     — is symlinked into the agent-neutral
+     skills directory ~/.agents/skills/ (override with --skills-target).
+     `links` entries whose destination is outside a per-agent directory
+     are also applied here.
+
+  2. Claude Code (only if Claude is installed — `claude` on PATH or
+     ~/.claude/ present): `links` entries with destinations under ~/.claude/
+     (CLAUDE.md, hooks, ...) are applied, ~/.claude/skills is symlinked to
+     the generic skills directory so Claude sees the same skill set, and the
+     `claude_settings` policy fragments are MERGED into the app-owned
+     ~/.claude/settings.json (see below). If ~/.claude/skills is still a
+     real directory from an older sync, it is converted automatically once
+     stale symlinks are cleaned up.
+
+  3. Antigravity (only if agy is installed — `agy` on PATH or
+     ~/.gemini/antigravity-cli/ present): `links` entries with destinations
+     under ~/.gemini/ (AGENTS.md, ...) are applied,
+     ~/.gemini/antigravity-cli/skills is symlinked to the generic skills
+     directory so agy sees the same skill set, and the `agy_settings`
+     policy fragments are MERGED into the app-owned
+     ~/.gemini/antigravity-cli/settings.json. Same mechanism as Claude
+     Code, same reasons.
+
+A manifest is a JSON file at manifests/<name>.json with this shape:
+
+    {
+      "name": "ozone",
+      "description": "...",
+      "skills": [
+        { "name": "learn", "path": "${AGENT_SKILLS_REPO}/skills/learn" },
+        { "name": "paniolo", "repo": "git@github.com:user/paniolo.git",
+          "path": "skills/paniolo" }
+      ],
+      "links": [
+        { "src": "${AGENT_SKILLS_REPO}/claude-code/CLAUDE.md",
+          "dst": "${HOME}/.claude/CLAUDE.md" },
+        { "src": "${AGENT_SKILLS_REPO}/claude-code/hooks/permission-notify.sh",
+          "dst": "${HOME}/.claude/hooks/permission-notify.sh" },
+        { "src": "${AGENT_SKILLS_REPO}/agy/AGENTS.md",
+          "dst": "${HOME}/.gemini/AGENTS.md" }
+      ],
+      "claude_settings": [
+        "${AGENT_SKILLS_REPO}/claude-code/settings.json",
+        "${AGENT_SKILLS_REPO}/claude-code/settings/hosts/ozone.json"
+      ],
+      "agy_settings": [
+        "${AGENT_SKILLS_REPO}/agy/settings.json"
+      ]
+    }
+
+`skills` is shorthand for "link this into the skills target directory under
+the entry's name". `links` is the general form: any source linked to any
+destination — agent harness state (hooks, instruction files) or anything
+else.
+
+`claude_settings` lists git-tracked policy fragments (shared base first,
+host fragment after) that are merged in order — dicts recurse, lists union,
+later scalars win — and then imposed on the live ~/.claude/settings.json.
+That file is deliberately NOT a symlink: Claude Code rewrites it at will
+(theme, effortLevel, enabledPlugins, notification prefs), so the app owns
+the file and the sync owns only the policy keys inside it. Policy list
+items are added if missing, policy scalars overwrite, app-owned keys are
+untouched. The state file remembers the applied policy snapshot, so a key
+removed from the fragments is retracted from the live file on the next
+sync (unless the app changed its value in the meantime). Claude Code does
+NOT read a user-level ~/.claude/settings.local.json (verified empirically,
+v2.1.167) — that's why merging, not file-splitting, is used here.
+
+`agy_settings` is the same thing for Antigravity, targeting the app-owned
+~/.gemini/antigravity-cli/settings.json. That file mixes policy (the
+permission allowlist) with app state (theme), so it gets merged rather
+than symlinked for the same reason.
+
+Skills entries support two source forms:
+  - path-based:  { "name": "...", "path": "<local-path>" }
+  - repo-based:  { "name": "...", "repo": "<git-url>", "path": "<repo-relative-path>" }
+
+For repo-based entries the script looks up ~/src/<repo-name> first (by
+convention); if that directory is a git checkout it is used directly.
+Otherwise the repo is cloned (and kept updated) under
+~/.agents/skill-repos/<repo-name>/.
+
+Both local path and dst fields support:
+  - ${AGENT_SKILLS_REPO}  (auto-resolved to this repo's root)
+  - any environment variable via ${VAR}
+  - a leading ~
+
+The script:
+  - Symlinks each entry into its destination, creating parent dirs as needed.
+  - Refuses to overwrite a non-symlink at the destination.
+  - Tracks every destination it created in
+    <skills_target>/.agent-skills-state.json so swapping manifests removes
+    stale symlinks even when they pointed at paths outside this repo.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+from copy import deepcopy
+from datetime import datetime, timezone
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+DEFAULT_SKILLS_TARGET = Path.home() / ".agents" / "skills"
+STATE_FILE_NAME = ".agent-skills-state.json"
+# Public skill repos whose skills/ dirs are auto-discovered, in order. A name
+# defined by the manifest wins over any of these; an earlier repo wins over a
+# later one on a name collision between repos.
+PUBLIC_SKILL_REPOS = [
+    Path.home() / "src" / "public-skills",
+    Path.home() / "src" / "fuchsia-skills",
+]
+SKILL_REPOS_CACHE = Path.home() / ".agents" / "skill-repos"
+LEGACY_SKILL_REPOS_CACHE = Path.home() / ".claude" / "skill-repos"
+CLAUDE_DIR = Path.home() / ".claude"
+CLAUDE_SKILLS_LINK = CLAUDE_DIR / "skills"
+CLAUDE_SETTINGS_FILE = CLAUDE_DIR / "settings.json"
+# Antigravity keeps its harness state under ~/.gemini: instruction files at
+# the top level, CLI-specific state (skills, settings) one level down.
+AGY_DIR = Path.home() / ".gemini"
+AGY_CLI_DIR = AGY_DIR / "antigravity-cli"
+AGY_SKILLS_LINK = AGY_CLI_DIR / "skills"
+AGY_SETTINGS_FILE = AGY_CLI_DIR / "settings.json"
+
+
+def expand_path(raw: str) -> Path:
+    s = raw.replace("${AGENT_SKILLS_REPO}", str(REPO))
+    s = os.path.expandvars(s)
+    return Path(s).expanduser()
+
+
+def claude_installed() -> bool:
+    return shutil.which("claude") is not None or CLAUDE_DIR.is_dir()
+
+
+def agy_installed() -> bool:
+    return shutil.which("agy") is not None or AGY_CLI_DIR.is_dir()
+
+
+def is_under(p: Path, root: Path) -> bool:
+    try:
+        p.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def repo_name_from_url(url: str) -> str:
+    """Extract 'paniolo' from 'git@github.com:user/paniolo.git'."""
+    name = url.rstrip("/").split("/")[-1]
+    if name.endswith(".git"):
+        name = name[:-4]
+    return name
+
+
+def resolve_repo_local(repo_url: str) -> Path:
+    """Return the local root of repo_url, cloning if necessary.
+
+    Checks ~/src/<name> first (convention); if that's a git checkout it is
+    used as-is. Otherwise clones into ~/.agents/skill-repos/<name>/ and pulls
+    on every subsequent sync. A pre-existing clone in the legacy
+    ~/.claude/skill-repos/<name>/ location is honored.
+    """
+    name = repo_name_from_url(repo_url)
+
+    local = Path.home() / "src" / name
+    if local.is_dir() and (local / ".git").exists():
+        return local
+
+    cache = SKILL_REPOS_CACHE / name
+    legacy_cache = LEGACY_SKILL_REPOS_CACHE / name
+    if not (cache.is_dir() and (cache / ".git").exists()) \
+            and legacy_cache.is_dir() and (legacy_cache / ".git").exists():
+        cache = legacy_cache
+    if cache.is_dir() and (cache / ".git").exists():
+        result = subprocess.run(
+            ["git", "-C", str(cache), "pull", "--ff-only"],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            print(f"warning: git pull failed for {name}: {result.stderr.strip()}")
+    else:
+        SKILL_REPOS_CACHE.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "clone", repo_url, str(cache)], check=True)
+    return cache
+
+
+def resolve_skill_src(entry: dict) -> Path:
+    """Return the source Path for a skills entry (path-based or repo-based)."""
+    if "repo" in entry:
+        return resolve_repo_local(entry["repo"]) / entry["path"]
+    return expand_path(entry["path"])
+
+
+def parse_git_skill_url(arg: str) -> tuple[str, str, str]:
+    """Parse a git:// shorthand → (skill_name, repo_url, skill_path).
+
+    Two forms:
+      Short:  git://<local-name>[/<path>]
+        First segment has no dot → look up ~/src/<name> for the remote URL.
+        git://paniolo/skills/paniolo
+          → name=paniolo  repo=<origin of ~/src/paniolo>  path=skills/paniolo
+
+      Full:   git://<host>/<owner>/<repo>[/<path>]
+        First segment contains a dot → construct git@host:owner/repo.git.
+        git://github.com/user/paniolo/skills/hdmicap
+          → name=hdmicap  repo=git@github.com:user/paniolo.git  path=skills/hdmicap
+    """
+    rest = arg[len("git://"):]
+    parts = rest.split("/")
+
+    if "." not in parts[0]:
+        repo_name = parts[0]
+        path_parts = parts[1:]
+        local = Path.home() / "src" / repo_name
+        if not local.is_dir() or not (local / ".git").exists():
+            sys.exit(
+                f"git:// short form: ~/src/{repo_name} not found or not a git repo\n"
+                f"use full form: git://<host>/<owner>/<repo>[/<path>]"
+            )
+        result = subprocess.run(
+            ["git", "-C", str(local), "remote", "get-url", "origin"],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            sys.exit(f"could not get remote URL for ~/src/{repo_name}: {result.stderr.strip()}")
+        repo_url = result.stdout.strip()
+        skill_path = "/".join(path_parts) if path_parts else f"skills/{repo_name}"
+        skill_name = path_parts[-1] if path_parts else repo_name
+        return skill_name, repo_url, skill_path
+
+    if len(parts) < 3:
+        sys.exit(
+            f"invalid git:// skill URL: {arg!r}\n"
+            f"expected: git://<host>/<owner>/<repo>[/<path/to/skill>]"
+        )
+    host, owner, repo_part = parts[0], parts[1], parts[2]
+    path_parts = parts[3:]
+    repo_name = repo_part[:-4] if repo_part.endswith(".git") else repo_part
+    repo_url = f"git@{host}:{owner}/{repo_name}.git"
+    skill_path = "/".join(path_parts) if path_parts else f"skills/{repo_name}"
+    skill_name = path_parts[-1] if path_parts else repo_name
+    return skill_name, repo_url, skill_path
+
+
+def load_manifest(name: str) -> dict:
+    p = REPO / "manifests" / f"{name}.json"
+    if not p.exists():
+        sys.exit(f"manifest not found: {p}\n"
+                 f"available: {', '.join(list_manifests()) or '(none)'}")
+    return json.loads(p.read_text())
+
+
+def list_manifests() -> list[str]:
+    d = REPO / "manifests"
+    return sorted(p.stem for p in d.glob("*.json")) if d.is_dir() else []
+
+
+def load_state(state_path: Path) -> dict:
+    """Load sync state, falling back to the legacy ~/.claude/skills location."""
+    if not state_path.exists():
+        legacy = CLAUDE_SKILLS_LINK / STATE_FILE_NAME
+        if not CLAUDE_SKILLS_LINK.is_symlink() and legacy.is_file():
+            state_path = legacy
+    if not state_path.exists():
+        return {"manifest": None, "links": []}
+    try:
+        data = json.loads(state_path.read_text())
+    except json.JSONDecodeError:
+        return {"manifest": None, "links": []}
+    if "names" in data and "links" not in data:
+        skills_target = state_path.parent
+        data["links"] = [str(skills_target / n) for n in data["names"]]
+    data.setdefault("links", [])
+    return data
+
+
+def save_state(state_path: Path, manifest_name: str, links: list[Path],
+               settings_applied: dict[str, dict]) -> None:
+    """Write the state file. `settings_applied` maps state key -> policy."""
+    state_path.write_text(json.dumps({
+        "manifest": manifest_name,
+        "linked_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "links": sorted({str(p) for p in links}),
+        **{k: v or {} for k, v in sorted(settings_applied.items())},
+    }, indent=2) + "\n")
+
+
+def collect_desired(
+    manifest: dict, skills_target: Path, claude_ok: bool, agy_ok: bool
+) -> tuple[list[tuple[str, Path, Path]], list[str]]:
+    """Return ((label, src, dst) tuples, skipped-entry notes) from the manifest."""
+    out: list[tuple[str, Path, Path]] = []
+    skipped: list[str] = []
+    seen: set[Path] = set()
+
+    for entry in manifest.get("skills", []):
+        name = entry["name"]
+        src = resolve_skill_src(entry)
+        dst = skills_target / name
+        if dst in seen:
+            sys.exit(f"duplicate destination in manifest: {dst}")
+        seen.add(dst)
+        out.append((name, src, dst))
+
+    for entry in manifest.get("links", []):
+        src = expand_path(entry["src"])
+        dst = expand_path(entry["dst"])
+        label = entry.get("label") or dst.name
+        if not claude_ok and is_under(dst, CLAUDE_DIR):
+            skipped.append(f"{label}: {dst} (Claude Code not installed)")
+            continue
+        if not agy_ok and is_under(dst, AGY_DIR):
+            skipped.append(f"{label}: {dst} (Antigravity not installed)")
+            continue
+        if dst in seen:
+            sys.exit(f"duplicate destination in manifest: {dst}")
+        seen.add(dst)
+        out.append((label, src, dst))
+
+    # Claude reads skills from ~/.claude/skills — point it at the generic dir.
+    if claude_ok and CLAUDE_SKILLS_LINK != skills_target:
+        out.append(("claude-skills", skills_target, CLAUDE_SKILLS_LINK))
+
+    # Same for agy, which reads ~/.gemini/antigravity-cli/skills.
+    if agy_ok and AGY_SKILLS_LINK != skills_target:
+        out.append(("agy-skills", skills_target, AGY_SKILLS_LINK))
+
+    return out, skipped
+
+
+def collect_public_skills(
+    skills_target: Path, taken_dsts: set[Path]
+) -> tuple[list[tuple[str, Path, Path]], list[str]]:
+    """Implicit skill entries from every repo in PUBLIC_SKILL_REPOS.
+
+    Returns (entries, warnings). Manifest entries win on name collision, as
+    does an earlier repo over a later one; the losing entry is skipped and
+    surfaced in `warnings`.
+    """
+    entries: list[tuple[str, Path, Path]] = []
+    warnings: list[str] = []
+    claimed = set(taken_dsts)
+    for repo in PUBLIC_SKILL_REPOS:
+        skills_dir = repo / "skills"
+        if not skills_dir.is_dir():
+            continue
+        for child in sorted(skills_dir.iterdir()):
+            if not child.is_dir() or not (child / "SKILL.md").exists():
+                continue
+            name = child.name
+            dst = skills_target / name
+            if dst in claimed:
+                warnings.append(
+                    f"{repo.name}/{name}: already defined at {dst}, skipped"
+                )
+                continue
+            claimed.add(dst)
+            entries.append((name, child, dst))
+    return entries, warnings
+
+
+def offer_claude(failures: list[str]) -> None:
+    """If claude is on PATH, offer to run it with the failure context."""
+    if not shutil.which("claude"):
+        return
+    if not sys.stdin.isatty():
+        return
+    lines = "\n".join(f"  - {f}" for f in failures)
+    prompt = (
+        f"The sync-agents script failed with the following problems:\n"
+        f"{lines}\n"
+        f"Please help me fix them."
+    )
+    print(f"\nRun claude to fix this? [y/N] ", end="", flush=True)
+    try:
+        answer = input().strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return
+    if answer == "y":
+        os.execvp("claude", ["claude", prompt])
+
+
+def add_skill_to_manifest(
+    manifest_name: str,
+    skill_name: str,
+    repo: str | None = None,
+    skill_path: str | None = None,
+) -> bool:
+    """Add skill_name to manifest. Returns True if manifest was modified."""
+    p = REPO / "manifests" / f"{manifest_name}.json"
+    manifest = json.loads(p.read_text())
+    existing = {e["name"] for e in manifest.get("skills", [])}
+    if skill_name in existing:
+        return False
+    if repo:
+        entry: dict = {
+            "name": skill_name,
+            "repo": repo,
+            "path": skill_path or f"skills/{skill_name}",
+        }
+    else:
+        entry = {
+            "name": skill_name,
+            "path": f"${{AGENT_SKILLS_REPO}}/skills/{skill_name}",
+        }
+    manifest.setdefault("skills", []).append(entry)
+    p.write_text(json.dumps(manifest, indent=2) + "\n")
+    return True
+
+
+def remove_skill_from_manifest(manifest_name: str, skill_name: str) -> bool:
+    """Remove skill_name from manifest. Returns True if manifest was modified."""
+    p = REPO / "manifests" / f"{manifest_name}.json"
+    manifest = json.loads(p.read_text())
+    before = manifest.get("skills", [])
+    after = [e for e in before if e.get("name") != skill_name]
+    if len(after) == len(before):
+        return False
+    manifest["skills"] = after
+    p.write_text(json.dumps(manifest, indent=2) + "\n")
+    return True
+
+
+def merge_fragments(base: dict, overlay: dict) -> dict:
+    """Merge a settings fragment onto base policy.
+
+    Dicts merge recursively, lists union (base order first), scalars from
+    the overlay win.
+    """
+    out = dict(base)
+    for k, v in overlay.items():
+        cur = out.get(k)
+        if isinstance(cur, dict) and isinstance(v, dict):
+            out[k] = merge_fragments(cur, v)
+        elif isinstance(cur, list) and isinstance(v, list):
+            out[k] = cur + [i for i in v if i not in cur]
+        else:
+            out[k] = deepcopy(v)
+    return out
+
+
+def assert_settings(live: dict, policy: dict) -> None:
+    """Impose policy onto live settings in place.
+
+    Policy scalars overwrite, policy list items are appended if missing
+    (app-added items are kept), dicts recurse. Keys the policy doesn't
+    mention are left alone — they belong to the app.
+    """
+    for k, v in policy.items():
+        cur = live.get(k)
+        if isinstance(v, dict) and isinstance(cur, dict):
+            assert_settings(cur, v)
+        elif isinstance(v, list) and isinstance(cur, list):
+            for item in v:
+                if item not in cur:
+                    cur.append(deepcopy(item))
+        else:
+            live[k] = deepcopy(v)
+
+
+def retract_settings(live: dict, old: dict, new: dict) -> None:
+    """Remove what the old policy asserted but the new one no longer does.
+
+    List items are removed exactly; scalars only if the live value still
+    equals what old policy set (a locally changed value is app state now);
+    dicts recurse and are pruned when emptied.
+    """
+    for k, old_v in old.items():
+        if k not in live:
+            continue
+        live_v = live[k]
+        new_v = new.get(k)
+        if isinstance(old_v, dict) and isinstance(live_v, dict):
+            retract_settings(live_v, old_v,
+                             new_v if isinstance(new_v, dict) else {})
+            if not live_v and not isinstance(new_v, dict):
+                del live[k]
+        elif isinstance(old_v, list) and isinstance(live_v, list):
+            new_items = new_v if isinstance(new_v, list) else []
+            gone = [i for i in old_v if i not in new_items]
+            live[k] = [i for i in live_v if i not in gone]
+            if not live[k] and not new_items:
+                del live[k]
+        elif k not in new and live_v == old_v:
+            del live[k]
+
+
+def sync_settings(
+    agent: str, manifest_key: str, target: Path, state_key: str,
+    manifest: dict, state: dict, dry_run: bool
+) -> tuple[list[str], dict | None, list[str]]:
+    """Merge `manifest_key` fragments into the app-owned settings file `target`.
+
+    The live file is never symlinked: the app owns it and freely rewrites
+    it (theme, effortLevel, plugins, ...). This asserts the policy keys
+    from the fragments into it and retracts whatever the previous sync's
+    policy asserted that the current one no longer does. The applied
+    policy snapshot is returned for the state file under `state_key`.
+
+    Returns (notes, applied_policy_or_None, failures).
+    """
+    notes: list[str] = []
+    failures: list[str] = []
+    fragments = manifest.get(manifest_key, [])
+    old_applied = state.get(state_key) or {}
+
+    policy: dict = {}
+    for raw in fragments:
+        p = expand_path(raw)
+        if not p.is_file():
+            failures.append(f"settings fragment missing: {p}")
+            return notes, None, failures
+        try:
+            frag = json.loads(p.read_text())
+        except json.JSONDecodeError as e:
+            failures.append(f"settings fragment unparseable: {p}: {e}")
+            return notes, None, failures
+        policy = merge_fragments(policy, frag)
+
+    if not fragments and not old_applied:
+        return notes, {}, failures
+
+    if target.is_symlink():
+        # Legacy layout: the live file was a symlink into the repo. Capture
+        # its content into a real, app-owned file before merging into it.
+        content = target.resolve().read_text() if target.exists() else "{}\n"
+        notes.append(f"{agent} settings: converting symlink -> real file  {target}")
+        if not dry_run:
+            target.unlink()
+            target.write_text(content)
+        live = json.loads(content)
+    elif target.is_file():
+        try:
+            live = json.loads(target.read_text())
+        except json.JSONDecodeError as e:
+            failures.append(f"live settings unparseable, leaving alone: {target}: {e}")
+            return notes, None, failures
+    else:
+        live = {}
+
+    before = json.dumps(live, sort_keys=True)
+    retract_settings(live, old_applied, policy)
+    assert_settings(live, policy)
+    if json.dumps(live, sort_keys=True) != before or not target.exists():
+        verb = "would update" if dry_run else "updated"
+        notes.append(f"{agent} settings: {verb} {target} "
+                     f"from {len(fragments)} fragment(s)")
+        if not dry_run:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(json.dumps(live, indent=2) + "\n")
+    else:
+        notes.append(f"{agent} settings: {target} up to date "
+                     f"({len(fragments)} fragment(s))")
+    return notes, policy, failures
+
+
+def migrate_skills_dir(dst: Path, src: Path) -> str | None:
+    """Convert a real per-agent skills directory into a symlink to src.
+
+    Stale symlinks inside have already been removed by the cleanup pass.
+    Returns an error message, or None on success.
+    """
+    for junk in (dst / STATE_FILE_NAME, dst / ".DS_Store"):
+        if junk.is_file():
+            junk.unlink()
+    try:
+        dst.rmdir()
+    except OSError:
+        leftover = ", ".join(sorted(p.name for p in dst.iterdir()))
+        return (f"{dst} is a directory and still contains: {leftover} — "
+                f"move these aside and re-run")
+    dst.symlink_to(src)
+    return None
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(
+        description="Sync agent state from a manifest into the local filesystem.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    ap.add_argument("--manifest", "-m",
+                    help="Manifest name under manifests/ (without .json). "
+                         "Default: last used, or 'default' on first run.")
+    ap.add_argument("--skills-target", "-t",
+                    default=str(DEFAULT_SKILLS_TARGET),
+                    help=f"Where 'skills' entries get linked "
+                         f"(default: {DEFAULT_SKILLS_TARGET}). The state file "
+                         f"also lives here.")
+    ap.add_argument("--dry-run", "-n", action="store_true",
+                    help="Print plan without changing the filesystem.")
+    ap.add_argument("--list", action="store_true",
+                    help="List available manifests and exit.")
+    ap.add_argument("--add-skill", "-a", metavar="SKILL",
+                    help="Add SKILL to the target manifest(s) and exit. "
+                         "Path defaults to ${AGENT_SKILLS_REPO}/skills/SKILL.")
+    ap.add_argument("--remove-skill", "-r", metavar="SKILL",
+                    help="Remove SKILL from the target manifest(s) and exit.")
+    ap.add_argument("--repo", metavar="URL",
+                    help="Git repo URL for the skill (used with --add-skill). "
+                         "On sync, ~/src/<repo-name> is checked first; "
+                         "otherwise the repo is cloned to ~/.agents/skill-repos/.")
+    ap.add_argument("--skill-path", metavar="PATH",
+                    help="Path within the repo (used with --add-skill --repo). "
+                         "Defaults to skills/<skill-name>.")
+    ap.add_argument("--all", dest="all_manifests", action="store_true",
+                    help="With --add-skill/--remove-skill: apply to every manifest "
+                         "in manifests/. Prints a reminder to sync each machine afterwards.")
+    args = ap.parse_args()
+
+    if args.list:
+        for n in list_manifests():
+            print(n)
+        return 0
+
+    if args.add_skill and args.remove_skill:
+        sys.exit("--add-skill and --remove-skill are mutually exclusive")
+
+    if args.add_skill or args.remove_skill:
+        adding = bool(args.add_skill)
+        skill_name = args.add_skill if adding else args.remove_skill
+
+        repo_url = args.repo
+        skill_path_arg = args.skill_path
+
+        if adding and skill_name.startswith("git://"):
+            skill_name, repo_url, skill_path_arg = parse_git_skill_url(skill_name)
+
+        if adding:
+            if repo_url:
+                local_root = Path.home() / "src" / repo_name_from_url(repo_url)
+                if not local_root.is_dir():
+                    print(f"note: {local_root} not found — will clone on sync")
+            else:
+                skill_dir = REPO / "skills" / skill_name
+                if not skill_dir.is_dir():
+                    print(f"error: {skill_dir} not found")
+                    return 2
+
+        add_kwargs = {}
+        if adding and repo_url:
+            add_kwargs["repo"] = repo_url
+            add_kwargs["skill_path"] = skill_path_arg
+
+        def fn_with_kwargs(mname: str, sname: str) -> bool:
+            if adding:
+                return add_skill_to_manifest(mname, sname, **add_kwargs)
+            return remove_skill_from_manifest(mname, sname)
+
+        if args.all_manifests:
+            targets = list_manifests()
+            if not targets:
+                sys.exit("no manifests found")
+            for mname in targets:
+                changed = fn_with_kwargs(mname, skill_name)
+                if adding:
+                    status = "added" if changed else "already present"
+                else:
+                    status = "removed" if changed else "not present"
+                print(f"  {status:<15}  {mname}")
+            print(f"\nRemember to run sync-agents on each machine to apply.")
+            return 0
+        else:
+            state_path = Path(args.skills_target).expanduser() / STATE_FILE_NAME
+            state = load_state(state_path)
+            manifest_name = args.manifest or state.get("manifest") or "default"
+            changed = fn_with_kwargs(manifest_name, skill_name)
+            if adding:
+                verb, already = "added to", "already in"
+            else:
+                verb, already = "removed from", "not in"
+            if changed:
+                print(f"{skill_name!r} {verb} manifest '{manifest_name}'")
+                print(f"Run sync-agents to apply.")
+            else:
+                print(f"{skill_name!r} {already} manifest '{manifest_name}'")
+            return 0
+
+    skills_target = Path(args.skills_target).expanduser()
+    fresh_target = skills_target.is_symlink()
+    if fresh_target:
+        # e.g. an old ~/.agents/skills → ~/.claude/skills link; the generic
+        # dir is the primary now, so it must be a real directory.
+        print(f"note: {skills_target} was a symlink -> "
+              f"{skills_target.readlink()} — replacing with a real directory")
+        if not args.dry_run:
+            skills_target.unlink()
+    if not args.dry_run:
+        skills_target.mkdir(parents=True, exist_ok=True)
+    state_path = skills_target / STATE_FILE_NAME
+
+    state = load_state(state_path)
+    manifest_name = args.manifest or state.get("manifest") or "default"
+    manifest = load_manifest(manifest_name)
+    claude_ok = claude_installed()
+    agy_ok = agy_installed()
+
+    # (display name, manifest key, app-owned live file, state key, installed?)
+    settings_agents = (
+        ("Claude Code", "claude_settings", CLAUDE_SETTINGS_FILE,
+         "claude_settings_applied", claude_ok),
+        ("Antigravity", "agy_settings", AGY_SETTINGS_FILE,
+         "agy_settings_applied", agy_ok),
+    )
+
+    # Settings run before link planning: converting a legacy settings.json
+    # symlink into a real file must happen before the stale-link remove pass
+    # evaluates what is and isn't a symlink.
+    settings_notes: list[str] = []
+    settings_failures: list[str] = []
+    applied_policy: dict[str, dict | None] = {}
+    for agent, mkey, target, skey, installed in settings_agents:
+        if installed:
+            notes, policy, fails = sync_settings(
+                agent, mkey, target, skey, manifest, state, args.dry_run)
+            settings_notes.extend(notes)
+            settings_failures.extend(fails)
+            applied_policy[skey] = policy
+        elif manifest.get(mkey):
+            settings_notes.append(f"{agent} settings: skipped (not installed)")
+
+    desired, skipped = collect_desired(manifest, skills_target, claude_ok, agy_ok)
+    taken_dsts = {dst for _, _, dst in desired}
+    public_entries, public_warnings = collect_public_skills(skills_target, taken_dsts)
+    desired.extend(public_entries)
+
+    for repo in PUBLIC_SKILL_REPOS:
+        if not (repo / "skills").is_dir():
+            print(
+                f"note: {repo} not found — consider cloning it "
+                f"for additional skills"
+            )
+    for w in public_warnings:
+        print(f"warning: {w}")
+    for s in skipped:
+        print(f"skipped: {s}")
+    for n in settings_notes:
+        print(f"  {n}")
+    for f in settings_failures:
+        print(f"ERROR: {f}", file=sys.stderr)
+
+    desired_dsts = {dst for _, _, dst in desired}
+    previous_dsts = {Path(p) for p in state.get("links", [])}
+
+    # The live settings.json is managed by the settings merge, not as a
+    # link — keep the remove pass away from it even if an old state file
+    # still lists it from the symlink era.
+    managed: set[Path] = set()
+    for _, mkey, target, _, installed in settings_agents:
+        if installed and manifest.get(mkey):
+            managed.add(target)
+
+    actions: list[tuple[str, str, Path | None, Path, str]] = []
+
+    for dst in sorted(previous_dsts - desired_dsts - managed):
+        if dst.is_symlink():
+            actions.append(("remove", dst.name, None, dst,
+                            f"-> {dst.readlink()} (not in manifest)"))
+
+    for label, src, dst in desired:
+        if not src.exists() and not (args.dry_run and src == skills_target):
+            actions.append(("MISS", label, src, dst, "source missing"))
+            continue
+        if fresh_target and skills_target in dst.parents:
+            # skills_target was just (or, on dry-run, would be) replaced with
+            # an empty directory — nothing under it can pre-exist.
+            actions.append(("link", label, src, dst, ""))
+            continue
+        if dst.is_symlink():
+            cur_raw = Path(os.readlink(dst))
+            cur = (dst.parent / cur_raw).resolve() if not cur_raw.is_absolute() else cur_raw.resolve()
+            if cur == src.resolve():
+                actions.append(("ok", label, src, dst, ""))
+            else:
+                actions.append(("relink", label, src, dst, f"was: {cur_raw}"))
+        elif dst.is_dir() and dst in (CLAUDE_SKILLS_LINK, AGY_SKILLS_LINK):
+            actions.append(("migrate", label, src, dst,
+                            "dir -> symlink (after stale links removed)"))
+        elif dst.exists():
+            actions.append(("WARN", label, src, dst,
+                            "non-symlink at destination — leaving alone"))
+        else:
+            actions.append(("link", label, src, dst, ""))
+
+    label_w = max((len(label) for _, label, *_ in actions), default=8)
+    for op, label, src, dst, note in actions:
+        srcs = f"{dst} -> {src}" if src else f"{dst}"
+        print(f"  {op:<6} {label:<{label_w}}  {note}  {srcs}".rstrip())
+
+    if not actions:
+        print("  (nothing to do)")
+
+    manifest_skill_srcs = {
+        expand_path(e["path"]).resolve()
+        for e in manifest.get("skills", [])
+        if "repo" not in e
+    }
+    unsynced = sorted(
+        child.name
+        for child in (REPO / "skills").iterdir()
+        if child.is_dir() and child.resolve() not in manifest_skill_srcs
+    )
+    if unsynced:
+        print(f"not in manifest: {', '.join(unsynced)}")
+
+    print()
+    print(f"manifest={manifest_name}  desired={len(desired_dsts)}  "
+          f"skills_target={skills_target}  claude={'yes' if claude_ok else 'no'}"
+          f"  agy={'yes' if agy_ok else 'no'}")
+
+    if args.dry_run:
+        print("(dry run — no changes made)")
+        return 1 if settings_failures else 0
+
+    final: list[Path] = []
+    had_error = bool(settings_failures)
+    failures: list[str] = list(settings_failures)
+    for op, label, src, dst, note in actions:
+        try:
+            if op == "remove":
+                dst.unlink()
+            elif op == "relink":
+                dst.unlink()
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                dst.symlink_to(src)
+                final.append(dst)
+            elif op == "link":
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                dst.symlink_to(src)
+                final.append(dst)
+            elif op == "ok":
+                final.append(dst)
+            elif op == "migrate":
+                msg = migrate_skills_dir(dst, src)
+                if msg:
+                    print(f"ERROR: {label}: {msg}", file=sys.stderr)
+                    failures.append(f"{label}: {msg}")
+                    had_error = True
+                else:
+                    final.append(dst)
+            elif op == "WARN":
+                msg = f"{label}: non-symlink at {dst} — refusing to overwrite"
+                print(f"ERROR: {msg}", file=sys.stderr)
+                failures.append(msg)
+                had_error = True
+            elif op == "MISS":
+                msg = f"{label}: source missing at {src}"
+                print(f"ERROR: {msg}", file=sys.stderr)
+                failures.append(msg)
+                had_error = True
+        except OSError as e:
+            msg = f"{label} ({dst}): {e}"
+            print(f"ERROR: {msg}", file=sys.stderr)
+            failures.append(msg)
+            had_error = True
+
+    for _, _, _, skey, _ in settings_agents:
+        if applied_policy.get(skey) is None:
+            # Settings failed or the agent is absent: keep the previous
+            # snapshot so a future sync can still retract what an older
+            # policy asserted.
+            applied_policy[skey] = state.get(skey) or {}
+    save_state(state_path, manifest_name, final, applied_policy)
+
+    if failures:
+        offer_claude(failures)
+
+    return 1 if had_error else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
