@@ -774,7 +774,16 @@ def main() -> int:
 
     for label, src, dst in desired:
         if not src.exists() and not (args.dry_run and src == skills_target):
-            actions.append(("MISS", label, src, dst, "source missing"))
+            # A MISS never reaches `final`, so its dst never lands in the
+            # state file — the stale-removal pass above (which walks
+            # previous_dsts) can therefore never reclaim a symlink left
+            # here, and it would dangle forever. Clear it as part of the
+            # failure instead. Only a symlink whose target is gone is
+            # touched; a working link is left for the WARN/relink paths.
+            note = "source missing"
+            if dst.is_symlink() and not dst.exists():
+                note = "source missing (will remove stale link)"
+            actions.append(("MISS", label, src, dst, note))
             continue
         if fresh_target and skills_target in dst.parents:
             # skills_target was just (or, on dry-run, would be) replaced with
@@ -860,6 +869,9 @@ def main() -> int:
                 had_error = True
             elif op == "MISS":
                 msg = f"{label}: source missing at {src}"
+                if dst.is_symlink() and not dst.exists():
+                    dst.unlink()
+                    msg += f" (removed stale link at {dst})"
                 print(f"ERROR: {msg}", file=sys.stderr)
                 failures.append(msg)
                 had_error = True
