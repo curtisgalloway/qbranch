@@ -125,7 +125,8 @@ Otherwise the repo is cloned (and kept updated) under
 ~/.agents/skill-repos/<repo-name>/.
 
 Both local path and dst fields support:
-  - ${AGENT_SKILLS_REPO}  (auto-resolved to this repo's root)
+  - ${QBRANCH_ROOT}       (the config root: this checkout, or $QBRANCH_ROOT /
+                           --root; ${AGENT_SKILLS_REPO} is the older alias)
   - any environment variable via ${VAR}
   - a leading ~
 
@@ -141,6 +142,10 @@ The script:
     managed / unmanaged / no longer managed; `--manage-plugin ID --in
     base|host [--value false]` declares one in a fragment. The
     review-plugins skill drives these two to triage unmanaged plugins.
+  - `--dry-run --json` prints the plan as JSON: the actions, plugin
+    actions and messages a sync would produce. tests/run_corpus.py
+    compares it against the corpus under tests/corpus/, which is the
+    specification a port of this tool has to satisfy.
 """
 
 from __future__ import annotations
@@ -156,7 +161,11 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parent.parent
+# The config root: manifests/, skills/ and claude-code/ live here. Normally
+# the checkout this script sits in; QBRANCH_ROOT or --root points elsewhere,
+# which is how the test corpus feeds it fixtures.
+REPO = Path(os.environ.get("QBRANCH_ROOT")
+            or Path(__file__).resolve().parent.parent).expanduser().resolve()
 DEFAULT_SKILLS_TARGET = Path.home() / ".agents" / "skills"
 STATE_FILE_NAME = ".agent-skills-state.json"
 VERSION = "0.2.0"
@@ -195,7 +204,8 @@ OFFICIAL_MARKETPLACE_SOURCE = {
 
 
 def expand_path(raw: str) -> Path:
-    s = raw.replace("${AGENT_SKILLS_REPO}", str(REPO))
+    s = raw.replace("${QBRANCH_ROOT}", str(REPO))
+    s = s.replace("${AGENT_SKILLS_REPO}", str(REPO))
     s = os.path.expandvars(s)
     return Path(s).expanduser()
 
@@ -1348,7 +1358,12 @@ def main() -> int:
                          f"(default: {DEFAULT_SKILLS_TARGET}). The state file "
                          f"also lives here.")
     ap.add_argument("--dry-run", "-n", action="store_true",
-                    help="Print plan without changing the filesystem.")
+                    help="Print plan without changing the filesystem. With "
+                         "--json, print the plan as JSON instead.")
+    ap.add_argument("--root", metavar="DIR",
+                    help="Config root holding manifests/, skills/ and "
+                         "claude-code/ (default: this checkout, or "
+                         "$QBRANCH_ROOT).")
     ap.add_argument("--list", action="store_true",
                     help="List available manifests and exit.")
     ap.add_argument("--add-skill", "-a", metavar="SKILL",
@@ -1398,6 +1413,8 @@ def main() -> int:
                          "plugin wherever the fragment applies; false pins it "
                          "disabled there. Default: true.")
     args = ap.parse_args()
+    if args.root:
+        globals()["REPO"] = Path(args.root).expanduser().resolve()
 
     if args.list:
         for n in list_manifests():
@@ -1508,13 +1525,30 @@ def main() -> int:
                 print(f"{skill_name!r} {already} manifest '{manifest_name}'")
             return 0
 
+    if args.json and not args.dry_run:
+        sys.exit("--json on a sync needs --dry-run (it prints the plan); "
+                 "--plugin-status and --audit have their own JSON reports")
+    messages: list[dict] = []
+
+    def say(level: str, text: str) -> None:
+        """Record a message for the plan; print it unless building JSON."""
+        messages.append({"level": level, "text": text})
+        if args.json:
+            return
+        if level == "error":
+            print(f"ERROR: {text}", file=sys.stderr)
+        elif level == "info":
+            print(f"  {text}")
+        else:
+            print(f"{level}: {text}")
+
     skills_target = Path(args.skills_target).expanduser()
     fresh_target = skills_target.is_symlink()
     if fresh_target:
         # e.g. an old ~/.agents/skills → ~/.claude/skills link; the generic
         # dir is the primary now, so it must be a real directory.
-        print(f"note: {skills_target} was a symlink -> "
-              f"{skills_target.readlink()} — replacing with a real directory")
+        say("note", f"{skills_target} was a symlink -> "
+                    f"{skills_target.readlink()} — replacing with a real directory")
         if not args.dry_run:
             skills_target.unlink()
     if not args.dry_run:
@@ -1525,8 +1559,8 @@ def main() -> int:
     manifest_name = args.manifest or state.get("manifest") or "default"
     manifest, upgrade_notes = load_manifest(manifest_name)
     for n in upgrade_notes:
-        print(f"note: manifest {manifest_name!r}: {n} (in memory; run "
-              f"--upgrade-manifests to rewrite manifests/)")
+        say("note", f"manifest {manifest_name!r}: {n} (in memory; run "
+                    f"--upgrade-manifests to rewrite manifests/)")
     claude_ok = claude_installed()
     agy_ok = agy_installed()
 
@@ -1571,16 +1605,16 @@ def main() -> int:
         settings_failures.extend(plugin_failures)
 
     for repo in missing_repos:
-        print(f"note: skill repo {repo} not found — clone it, or drop it "
-              f"from the manifest's skill_repos")
+        say("note", f"skill repo {repo} not found — clone it, or drop it "
+                    f"from the manifest's skill_repos")
     for w in repo_warnings:
-        print(f"warning: {w}")
+        say("warning", w)
     for s in skipped:
-        print(f"skipped: {s}")
+        say("skipped", s)
     for n in settings_notes:
-        print(f"  {n}")
+        say("info", n)
     for f in settings_failures:
-        print(f"ERROR: {f}", file=sys.stderr)
+        say("error", f)
 
     desired_dsts = {dst for _, _, dst in desired}
     previous_dsts = {Path(p) for p in state.get("links", [])}
@@ -1634,29 +1668,54 @@ def main() -> int:
         else:
             actions.append(("link", label, src, dst, ""))
 
-    label_w = max(
-        (len(label) for _, label, *_ in actions + plugin_actions), default=8)
-    for op, label, src, dst, note in actions:
-        srcs = f"{dst} -> {src}" if src else f"{dst}"
-        print(f"  {op:<7} {label:<{label_w}}  {note}  {srcs}".rstrip())
-    for op, label, argv in plugin_actions:
-        print(f"  {op:<7} {label:<{label_w}}  {' '.join(argv)}")
-
-    if not actions and not plugin_actions:
-        print("  (nothing to do)")
+    if not args.json:
+        label_w = max(
+            (len(label) for _, label, *_ in actions + plugin_actions), default=8)
+        for op, label, src, dst, note in actions:
+            srcs = f"{dst} -> {src}" if src else f"{dst}"
+            print(f"  {op:<7} {label:<{label_w}}  {note}  {srcs}".rstrip())
+        for op, label, argv in plugin_actions:
+            print(f"  {op:<7} {label:<{label_w}}  {' '.join(argv)}")
+        if not actions and not plugin_actions:
+            print("  (nothing to do)")
 
     manifest_skill_srcs = {
         expand_path(e["path"]).resolve()
         for e in manifest.get("skills", [])
         if "repo" not in e
     }
+    repo_skills = REPO / "skills"
     unsynced = sorted(
         child.name
-        for child in (REPO / "skills").iterdir()
+        for child in (repo_skills.iterdir() if repo_skills.is_dir() else [])
         if child.is_dir() and child.resolve() not in manifest_skill_srcs
     )
     if unsynced:
-        print(f"not in manifest: {', '.join(unsynced)}")
+        say("note", f"not in manifest: {', '.join(unsynced)}")
+
+    if args.json:
+        plan = {
+            "tool": VERSION,
+            "schema": MANIFEST_SCHEMA,
+            "manifest": manifest_name,
+            "dry_run": True,
+            "skills_target": str(skills_target),
+            "claude": claude_ok,
+            "agy": agy_ok,
+            "desired": len(desired_dsts),
+            "actions": [
+                {"op": op, "label": label, "src": str(src) if src else None,
+                 "dst": str(dst), "note": note}
+                for op, label, src, dst, note in actions],
+            "plugin_actions": [
+                {"op": op, "label": label, "argv": argv}
+                for op, label, argv in plugin_actions],
+            "unlinked_repo_skills": unsynced,
+            "messages": messages,
+            "failures": settings_failures,
+        }
+        print(json.dumps(plan, indent=2))
+        return 1 if settings_failures else 0
 
     print()
     print(f"manifest={manifest_name}  desired={len(desired_dsts)}  "
