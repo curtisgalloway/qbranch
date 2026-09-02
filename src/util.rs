@@ -1,10 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Curtis Galloway
 // SPDX-License-Identifier: Apache-2.0
 //! Small helpers shared by every module: fatal exits, JSON file I/O, and
-//! Python-compatible formatting for the strings the corpus pins. The
-//! reference implementation is a Python script, and several of its messages
-//! embed `repr()` output (`'name'`, `['a', 'b']`), so those forms are
-//! reproduced here rather than approximated.
+//! the Python-compatible JSON and `str()` formatting that keeps the port's
+//! output byte-identical to the reference script's.
 
 use serde_json::{Map, Value as Json};
 use std::fs;
@@ -47,13 +45,11 @@ pub fn kind(v: &Json) -> &'static str {
     }
 }
 
-/// `json.dumps(v, indent=2)`, including its default `ensure_ascii`: every
-/// non-ASCII character becomes a `\uXXXX` escape (a surrogate pair above
-/// the BMP), so files and reports match the reference byte for byte. The
-/// serializer only ever emits non-ASCII inside string literals, so a pass
-/// over the finished text is safe.
-pub fn pretty(v: &Json) -> String {
-    let raw = serde_json::to_string_pretty(v).unwrap_or_default();
+/// `json.dumps`'s default `ensure_ascii`: every non-ASCII character becomes
+/// a `\uXXXX` escape (a surrogate pair above the BMP). The serializer only
+/// ever emits non-ASCII inside string literals, so a pass over the finished
+/// text is safe.
+fn ascii_escape(raw: String) -> String {
     if raw.is_ascii() {
         return raw;
     }
@@ -69,6 +65,47 @@ pub fn pretty(v: &Json) -> String {
         }
     }
     out
+}
+
+/// `json.dumps(v, indent=2)`.
+pub fn pretty(v: &Json) -> String {
+    ascii_escape(serde_json::to_string_pretty(v).unwrap_or_default())
+}
+
+/// `json.dumps(v)`: one line, with Python's `, ` and `: ` separators.
+pub fn py_dumps(v: &Json) -> String {
+    let mut out = String::new();
+    write_py(v, &mut out);
+    ascii_escape(out)
+}
+
+fn write_py(v: &Json, out: &mut String) {
+    match v {
+        Json::Null | Json::Bool(_) | Json::Number(_) => out.push_str(&v.to_string()),
+        Json::String(s) => out.push_str(&serde_json::to_string(s).unwrap_or_default()),
+        Json::Array(a) => {
+            out.push('[');
+            for (i, x) in a.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                write_py(x, out);
+            }
+            out.push(']');
+        }
+        Json::Object(m) => {
+            out.push('{');
+            for (i, (k, x)) in m.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                out.push_str(&serde_json::to_string(k).unwrap_or_default());
+                out.push_str(": ");
+                write_py(x, out);
+            }
+            out.push('}');
+        }
+    }
 }
 
 pub fn write_json(p: &Path, v: &Json) -> io::Result<()> {
@@ -118,59 +155,15 @@ pub fn arr_or_empty(m: &JMap, k: &str) -> Vec<Json> {
     arr(m.get(k)).cloned().unwrap_or_default()
 }
 
-/// `repr()` of a str.
-pub fn py_repr_str(s: &str) -> String {
-    let quote = if s.contains('\'') && !s.contains('"') {
-        '"'
-    } else {
-        '\''
-    };
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push(quote);
-    for c in s.chars() {
-        match c {
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if c == quote => {
-                out.push('\\');
-                out.push(c);
-            }
-            c if (c as u32) < 0x20 || c as u32 == 0x7f => {
-                out.push_str(&format!("\\x{:02x}", c as u32));
-            }
-            c => out.push(c),
-        }
-    }
-    out.push(quote);
-    out
-}
-
-/// `repr()` of a value `json.loads` would have produced.
-pub fn py_repr(v: &Json) -> String {
-    match v {
-        Json::Null => "None".to_string(),
-        Json::Bool(true) => "True".to_string(),
-        Json::Bool(false) => "False".to_string(),
-        Json::Number(n) => n.to_string(),
-        Json::String(s) => py_repr_str(s),
-        Json::Array(a) => format!("[{}]", a.iter().map(py_repr).collect::<Vec<_>>().join(", ")),
-        Json::Object(m) => format!(
-            "{{{}}}",
-            m.iter()
-                .map(|(k, v)| format!("{}: {}", py_repr_str(k), py_repr(v)))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-    }
-}
-
-/// `str()` of such a value: strings bare, everything else as `repr()`.
+/// `str()` of a value `json.loads` produced: strings bare, `None`, `True`,
+/// numbers as written; containers as compact JSON.
 pub fn py_str(v: &Json) -> String {
     match v {
         Json::String(s) => s.clone(),
-        other => py_repr(other),
+        Json::Null => "None".to_string(),
+        Json::Bool(true) => "True".to_string(),
+        Json::Bool(false) => "False".to_string(),
+        other => py_dumps(other),
     }
 }
 

@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git:*)",
+      "Bash(jq:*)"
+    ]
+  },
+  "enabledPlugins": {
+    "p1@claude-plugins-official": true,
+    "q@mkt1": true
+  },
+  "extraKnownMarketplaces": {
+    "mkt1": {
+      "source": {
+        "source": "github",
+        "repo": "example/mkt1"
+      }
+    }
+  }
+}

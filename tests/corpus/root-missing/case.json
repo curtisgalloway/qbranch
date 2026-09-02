@@ -1,0 +1,8 @@
+{
+  "manifest": "none",
+  "env": {
+    "QBRANCH_ROOT": null
+  },
+  "rc": 1,
+  "stderr_contains": "no config root"
+}

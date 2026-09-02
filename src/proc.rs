@@ -2,8 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Subprocess helpers: `subprocess.run(capture_output=True, timeout=...)`
 //! with stdin closed, and the inherit-everything form used for `git clone`.
+//! On Windows a bare program name is resolved through PATH and PATHEXT
+//! first, so an npm-installed `claude.cmd` runs the way `claude.exe` would.
 
+use crate::paths;
 use std::io::Read;
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -27,11 +31,23 @@ impl Output {
     }
 }
 
+/// The program to hand to `Command::new`: on Windows, a bare name found on
+/// PATH (with PATHEXT), so `.cmd` shims run through the standard library's
+/// batch-file handling; elsewhere, the name as given.
+fn program(name: &str) -> PathBuf {
+    if cfg!(windows) && !name.contains(['/', '\\']) {
+        if let Some(found) = paths::which(name) {
+            return found;
+        }
+    }
+    PathBuf::from(name)
+}
+
 /// Run `argv`, capturing both streams, with stdin closed. A timeout of
 /// `None` waits forever. Errors cover a failed spawn and the timeout.
 pub fn run_capture(argv: &[String], timeout: Option<Duration>) -> Result<Output, String> {
     let (first, rest) = argv.split_first().ok_or("empty command")?;
-    let mut child = Command::new(first)
+    let mut child = Command::new(program(first))
         .args(rest)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -81,7 +97,7 @@ pub fn run_capture(argv: &[String], timeout: Option<Duration>) -> Result<Output,
 /// Run `argv` with inherited stdio and return whether it exited 0.
 pub fn run_inherit(argv: &[String]) -> Result<bool, String> {
     let (first, rest) = argv.split_first().ok_or("empty command")?;
-    Command::new(first)
+    Command::new(program(first))
         .args(rest)
         .status()
         .map(|s| s.success())
@@ -94,13 +110,13 @@ pub fn exec(argv: &[String]) -> ! {
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
-        let err = Command::new(first).args(rest).exec();
+        let err = Command::new(program(first)).args(rest).exec();
         eprintln!("{first}: {err}");
         std::process::exit(1)
     }
     #[cfg(not(unix))]
     {
-        match Command::new(first).args(rest).status() {
+        match Command::new(program(first)).args(rest).status() {
             Ok(s) => std::process::exit(s.code().unwrap_or(1)),
             Err(e) => {
                 eprintln!("{first}: {e}");

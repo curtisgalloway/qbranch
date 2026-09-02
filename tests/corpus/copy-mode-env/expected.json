@@ -1,0 +1,58 @@
+{
+  "tool": "0.2.0",
+  "schema": 2,
+  "manifest": "fresh",
+  "dry_run": true,
+  "skills_target": "<CASE>/home/.agents/skills",
+  "link_mode": "copy",
+  "claude": true,
+  "agy": false,
+  "desired": 4,
+  "actions": [
+    {
+      "op": "copy",
+      "label": "alpha",
+      "src": "<CASE>/root/skills/alpha",
+      "dst": "<CASE>/home/.agents/skills/alpha",
+      "note": ""
+    },
+    {
+      "op": "copy",
+      "label": "beta",
+      "src": "<CASE>/root/skills/beta",
+      "dst": "<CASE>/home/.agents/skills/beta",
+      "note": ""
+    },
+    {
+      "op": "copy",
+      "label": "CLAUDE.md",
+      "src": "<CASE>/root/claude-code/CLAUDE.md",
+      "dst": "<CASE>/home/.claude/CLAUDE.md",
+      "note": ""
+    },
+    {
+      "op": "copy",
+      "label": "claude-skills",
+      "src": "<CASE>/home/.agents/skills",
+      "dst": "<CASE>/home/.claude/skills",
+      "note": ""
+    }
+  ],
+  "plugin_actions": [],
+  "unlinked_repo_skills": [],
+  "messages": [
+    {
+      "level": "skipped",
+      "text": "AGENTS.md: <CASE>/home/.gemini/AGENTS.md (Antigravity not installed)"
+    },
+    {
+      "level": "info",
+      "text": "Claude Code settings: would update <CASE>/home/.claude/settings.json from 1 fragment(s)"
+    },
+    {
+      "level": "info",
+      "text": "Claude Code plugins: skipped (claude not on PATH)"
+    }
+  ],
+  "failures": []
+}

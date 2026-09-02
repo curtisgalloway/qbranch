@@ -1,3 +1,6 @@
 {
-  "manifest": "legacy"
+  "manifest": "empty",
+  "mkdirs": [
+    "home/.claude/skills"
+  ]
 }

@@ -4,6 +4,7 @@
   "manifest": "retract",
   "dry_run": true,
   "skills_target": "<CASE>/home/.agents/skills",
+  "link_mode": "symlink",
   "claude": true,
   "agy": false,
   "desired": 8,

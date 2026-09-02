@@ -1,0 +1,7 @@
+{
+  "manifest": "copy",
+  "args": [
+    "--link-mode",
+    "copy"
+  ]
+}

@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Path helpers that reproduce the pathlib and os.path behaviour the
 //! reference script relies on: lexical cleaning, `~` and `$VAR` expansion,
-//! non-strict resolution, and a PATH lookup. The plan the corpus compares
-//! prints paths, so the string form of every path has to come out the way
-//! `str(pathlib.Path(...))` would print it.
+//! non-strict resolution, a PATH lookup, and the hostname. The plan the
+//! corpus compares prints paths, so the string form of every path has to
+//! come out the way `str(pathlib.Path(...))` would print it.
 
 use std::env;
 use std::fs;
@@ -93,6 +93,23 @@ pub fn expandvars(s: &str) -> String {
     out
 }
 
+/// `canonicalize` without the `\\?\` verbatim prefix Windows adds, which
+/// nothing else in the plan carries and which breaks prefix comparisons.
+fn canonical(p: &Path) -> Option<PathBuf> {
+    let c = p.canonicalize().ok()?;
+    #[cfg(windows)]
+    {
+        let s = c.to_string_lossy().into_owned();
+        if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+            return Some(PathBuf::from(format!(r"\\{rest}")));
+        }
+        if let Some(rest) = s.strip_prefix(r"\\?\") {
+            return Some(PathBuf::from(rest));
+        }
+    }
+    Some(c)
+}
+
 /// `Path.resolve()` (non-strict): canonicalize the longest existing prefix
 /// and append the rest lexically.
 pub fn resolve(p: &Path) -> PathBuf {
@@ -101,13 +118,13 @@ pub fn resolve(p: &Path) -> PathBuf {
     } else {
         env::current_dir().unwrap_or_default().join(p)
     };
-    if let Ok(c) = abs.canonicalize() {
+    if let Some(c) = canonical(&abs) {
         return c;
     }
     let comps: Vec<Component> = abs.components().collect();
     for k in (1..=comps.len()).rev() {
         let prefix: PathBuf = comps[..k].iter().map(|c| c.as_os_str()).collect();
-        if let Ok(mut c) = prefix.canonicalize() {
+        if let Some(mut c) = canonical(&prefix) {
             for comp in &comps[k..] {
                 match comp {
                     Component::ParentDir => {
@@ -221,4 +238,25 @@ pub fn unlink(p: &Path) -> std::io::Result<()> {
         }
     }
     fs::remove_file(p)
+}
+
+#[cfg(unix)]
+fn hostname() -> String {
+    let mut buf = [0u8; 256];
+    let rc = unsafe { libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len()) };
+    if rc != 0 {
+        return String::new();
+    }
+    let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    String::from_utf8_lossy(&buf[..end]).into_owned()
+}
+
+#[cfg(windows)]
+fn hostname() -> String {
+    env::var("COMPUTERNAME").unwrap_or_default()
+}
+
+/// This machine's name as a manifest name: the first label, lowercased.
+pub fn short_hostname() -> String {
+    hostname().split('.').next().unwrap_or("").to_lowercase()
 }

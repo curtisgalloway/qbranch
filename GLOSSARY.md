@@ -21,8 +21,9 @@ that declares the CAD plugins, listed by the two Macs.
 directory named by `CLAUDE_CONFIG_DIR`).
 
 **Config root.** The directory holding `manifests/`, settings fragments, and any skills or
-instruction files that qbranch links from. Set with `--root` or `QBRANCH_ROOT`; remembered after
-the first sync. The manifest variable `${QBRANCH_ROOT}` expands to it.
+instruction files that qbranch links from. Chosen from `--root`, else `QBRANCH_ROOT`, else the
+root remembered after the last sync, else the current directory when it holds `manifests/`. The
+manifest variable `${QBRANCH_ROOT}` expands to it.
 
 **Corpus.** The test cases under `tests/corpus/`, each a fixture config root and home directory
 with the plan the tool must produce. It is the specification a port of the tool must satisfy.
@@ -39,8 +40,13 @@ that plan as JSON.
 listed last in that machine's manifest so its values win.
 
 **Link.** A symbolic link qbranch creates from a destination the harness reads (a skills
-directory, `~/.claude/CLAUDE.md`, a hook file) to a source in a checkout. Links are the only
-things qbranch creates for files; it never copies them.
+directory, `~/.claude/CLAUDE.md`, a hook file) to a source in a checkout. In copy mode the
+same entry is materialised as a copy instead; either way qbranch tracks what it made.
+
+**Link mode.** How manifest entries are materialised: `symlink` (the default where links work),
+`copy` (each entry copied, refreshed on every sync, removed when dropped from the manifest), or
+`auto` (symlink, falling back to copy on Windows when the process may not create links). Set
+with `--link-mode`; the choice is remembered in the state file like the config root.
 
 **Managed plugin.** A plugin that some settings fragment declares, as `true` (install and
 enable) or `false` (keep disabled). Only managed plugins follow the user between machines.
@@ -85,8 +91,8 @@ pick themes; a plain repo contributes `skills/*/SKILL.md`.
 directory by default. The state file lives there.
 
 **State file.** `.qbranch-state.json` in the skills target: the manifest name, the config root,
-every link the last sync created, and the settings policy it applied. Older syncs wrote
-`.agent-skills-state.json`, which is read and replaced.
+the chosen link mode, every link and copy the last sync created, and the settings policy it
+applied. Older syncs wrote `.agent-skills-state.json`, which is read and replaced.
 
 **Theme.** A plugin in a marketplace-shaped skills repo that groups related skills, such as
 `hardware-lab` in public-skills.

@@ -8,6 +8,7 @@
 //! this crate mirrors it function for function.
 
 mod audit;
+mod copy;
 mod ctx;
 mod manifest;
 mod paths;
@@ -22,8 +23,7 @@ mod util;
 use clap::{CommandFactory, FromArgMatches, Parser};
 use ctx::{Ctx, MANIFEST_SCHEMA, STATE_FILE_NAME, VERSION};
 use serde_json::{json, Value as Json};
-use std::path::Path;
-use util::{die, display, py_repr_str};
+use util::{die, display, JMap};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -33,8 +33,8 @@ use util::{die, display, py_repr_str};
     disable_version_flag = true
 )]
 struct Cli {
-    /// Manifest name under manifests/ (without .json). Default: last used,
-    /// or 'default' on first run.
+    /// Manifest name under manifests/ (without .json). Default: the last
+    /// synced one, else this host's name, else 'default'.
     #[arg(short = 'm', long)]
     manifest: Option<String>,
 
@@ -48,17 +48,26 @@ struct Cli {
     #[arg(short = 'n', long)]
     dry_run: bool,
 
-    /// Config root holding manifests/, skills/ and claude-code/ (default:
-    /// the root remembered by the last sync, or $QBRANCH_ROOT).
+    /// Config root holding manifests/, skills/ and claude-code/. Default:
+    /// $QBRANCH_ROOT, else the root remembered by the last sync, else the
+    /// current directory.
     #[arg(long, value_name = "DIR")]
     root: Option<String>,
+
+    /// How entries are materialised: symlink (the default where links
+    /// work), copy (copied and refreshed on every sync, for filesystems or
+    /// Windows setups without symlinks), auto (symlink, falling back to
+    /// copy on Windows without Developer Mode). Remembered like --root;
+    /// auto forgets.
+    #[arg(long, value_name = "MODE", value_parser = sync::LINK_MODES)]
+    link_mode: Option<String>,
 
     /// List available manifests and exit.
     #[arg(long)]
     list: bool,
 
     /// Add SKILL to the target manifest(s) and exit. Path defaults to
-    /// ${AGENT_SKILLS_REPO}/skills/SKILL.
+    /// ${QBRANCH_ROOT}/skills/SKILL.
     #[arg(short = 'a', long, value_name = "SKILL")]
     add_skill: Option<String>,
 
@@ -143,15 +152,18 @@ fn run() -> i32 {
     }
 
     let mut ctx = Ctx::from_env();
-    if let Some(root) = &args.root {
-        ctx.repo = paths::resolve(&paths::expanduser(&paths::clean(root), &ctx.home));
-    }
     let skills_target = match &args.skills_target {
         Some(t) => paths::expanduser(&paths::clean(t), &ctx.home),
         None => ctx.default_skills_target.clone(),
     };
+    let state_path = skills_target.join(STATE_FILE_NAME);
 
     if args.list {
+        state::resolve_root(
+            &mut ctx,
+            args.root.as_deref(),
+            &state::load_state(&state_path),
+        );
         for n in manifest::list_manifests(&ctx) {
             println!("{n}");
         }
@@ -159,14 +171,18 @@ fn run() -> i32 {
     }
 
     if args.upgrade_manifests {
+        state::resolve_root(
+            &mut ctx,
+            args.root.as_deref(),
+            &state::load_state(&state_path),
+        );
         return manifest::upgrade_manifests(&ctx);
     }
 
     if args.plugin_status || args.manage_plugin.is_some() || args.audit {
-        let state_path = skills_target.join(STATE_FILE_NAME);
-        let state = state::load_state(&ctx, &state_path);
-        state::adopt_remembered_root(&mut ctx, args.root.is_some(), &state);
-        let manifest_name = remembered_manifest(&args.manifest, &state);
+        let state = state::load_state(&state_path);
+        state::resolve_root(&mut ctx, args.root.as_deref(), &state);
+        let manifest_name = state::choose_manifest(&ctx, args.manifest.as_deref(), &state);
         if args.audit {
             let (manifest, _) = manifest::load_manifest(&ctx, &manifest_name);
             let (report, fails) =
@@ -214,9 +230,14 @@ fn run() -> i32 {
     }
 
     if args.add_skill.is_some() || args.remove_skill.is_some() {
-        return edit_skill(&mut ctx, &args, &skills_target);
+        let state = state::load_state(&state_path);
+        state::resolve_root(&mut ctx, args.root.as_deref(), &state);
+        return edit_skill(&ctx, &args, &state);
     }
 
+    if args.json && !args.dry_run {
+        die("--json on a sync needs --dry-run (it prints the plan); --plugin-status and --audit have their own JSON reports");
+    }
     sync::run(
         &mut ctx,
         &sync::SyncArgs {
@@ -224,26 +245,14 @@ fn run() -> i32 {
             skills_target,
             dry_run: args.dry_run,
             json: args.json,
-            root_given: args.root.is_some(),
+            root: args.root.clone(),
+            link_mode: args.link_mode.clone(),
         },
     )
 }
 
-/// `args.manifest or state.get("manifest") or "default"`.
-fn remembered_manifest(explicit: &Option<String>, state: &util::JMap) -> String {
-    explicit
-        .clone()
-        .filter(|s| !s.is_empty())
-        .or_else(|| {
-            util::string(state.get("manifest"))
-                .filter(|s| !s.is_empty())
-                .map(str::to_string)
-        })
-        .unwrap_or_else(|| "default".to_string())
-}
-
-/// --add-skill / --remove-skill.
-fn edit_skill(ctx: &mut Ctx, args: &Cli, skills_target: &Path) -> i32 {
+/// --add-skill / --remove-skill against one manifest or all of them.
+fn edit_skill(ctx: &Ctx, args: &Cli, state: &JMap) -> i32 {
     let adding = args.add_skill.is_some();
     let mut skill_name = args
         .add_skill
@@ -274,14 +283,14 @@ fn edit_skill(ctx: &mut Ctx, args: &Cli, skills_target: &Path) -> i32 {
             None => {
                 let skill_dir = ctx.repo.join("skills").join(&skill_name);
                 if !skill_dir.is_dir() {
-                    println!("error: {} not found", display(&skill_dir));
+                    eprintln!("error: {} not found", display(&skill_dir));
                     return 2;
                 }
             }
         }
     }
 
-    let apply = |ctx: &Ctx, mname: &str, sname: &str| -> bool {
+    let apply = |mname: &str, sname: &str| -> bool {
         if adding {
             manifest::add_skill_to_manifest(
                 ctx,
@@ -301,7 +310,7 @@ fn edit_skill(ctx: &mut Ctx, args: &Cli, skills_target: &Path) -> i32 {
             die("no manifests found");
         }
         for mname in targets {
-            let changed = apply(ctx, &mname, &skill_name);
+            let changed = apply(&mname, &skill_name);
             let status = match (adding, changed) {
                 (true, true) => "added",
                 (true, false) => "already present",
@@ -314,27 +323,18 @@ fn edit_skill(ctx: &mut Ctx, args: &Cli, skills_target: &Path) -> i32 {
         return 0;
     }
 
-    let state_path = skills_target.join(STATE_FILE_NAME);
-    let state = state::load_state(ctx, &state_path);
-    state::adopt_remembered_root(ctx, args.root.is_some(), &state);
-    let manifest_name = remembered_manifest(&args.manifest, &state);
-    let changed = apply(ctx, &manifest_name, &skill_name);
+    let manifest_name = state::choose_manifest(ctx, args.manifest.as_deref(), state);
+    let changed = apply(&manifest_name, &skill_name);
     let (verb, already) = if adding {
         ("added to", "already in")
     } else {
         ("removed from", "not in")
     };
     if changed {
-        println!(
-            "{} {verb} manifest '{manifest_name}'",
-            py_repr_str(&skill_name)
-        );
+        println!("'{skill_name}' {verb} manifest '{manifest_name}'");
         println!("Run qbranch to apply.");
     } else {
-        println!(
-            "{} {already} manifest '{manifest_name}'",
-            py_repr_str(&skill_name)
-        );
+        println!("'{skill_name}' {already} manifest '{manifest_name}'");
     }
     0
 }

@@ -4,10 +4,10 @@
 //! rewriting at the current schema, and the --add-skill / --remove-skill
 //! edits.
 
-use crate::ctx::{Ctx, DEFAULT_SKILL_REPOS, MANIFEST_SCHEMA, VERSION};
+use crate::ctx::{Ctx, MANIFEST_SCHEMA, VERSION};
 use crate::paths;
 use crate::proc;
-use crate::util::{self, die, display, py_repr_str, py_str, JMap};
+use crate::util::{self, die, display, py_str, JMap};
 use serde_json::{json, Value as Json};
 use std::fs;
 use std::path::PathBuf;
@@ -26,24 +26,19 @@ pub fn migrate_manifest(name: &str, mut m: JMap) -> (JMap, Vec<String>) {
     let schema = match schema {
         Some(n) if n <= MANIFEST_SCHEMA => n,
         _ => die(format!(
-            "manifest {} is schema {}; qbranch {} understands up to schema {} — update the tool",
-            py_repr_str(name),
-            py_str(&v),
-            VERSION,
-            MANIFEST_SCHEMA
+            "manifest '{name}' is schema {}; qbranch {VERSION} understands up to schema {MANIFEST_SCHEMA} — update the tool",
+            py_str(&v)
         )),
     };
     let mut notes = Vec::new();
     if schema < 2 {
         if !m.contains_key("skill_repos") {
-            let repos: Vec<Json> = DEFAULT_SKILL_REPOS
-                .iter()
-                .map(|p| json!({"path": p}))
-                .collect();
-            m.insert("skill_repos".to_string(), Json::Array(repos));
+            m.insert("skill_repos".to_string(), json!([]));
         }
-        notes
-            .push("schema 1 -> 2: skill_repos materialized from the built-in defaults".to_string());
+        notes.push(
+            "schema 1 -> 2: skill_repos added (empty); list the checkouts whose skills should be linked in bulk"
+                .to_string(),
+        );
     }
     if !notes.is_empty() {
         let mut out = JMap::new();
@@ -62,12 +57,6 @@ pub fn migrate_manifest(name: &str, mut m: JMap) -> (JMap, Vec<String>) {
 ///
 /// Returns (manifest, upgrade_notes); notes are empty for a current one.
 pub fn load_manifest(ctx: &Ctx, name: &str) -> (JMap, Vec<String>) {
-    if !ctx.manifests_dir().is_dir() {
-        die(format!(
-            "no manifests/ under {} — pass --root <config root> (remembered after the first sync) or set QBRANCH_ROOT",
-            display(&ctx.repo)
-        ));
-    }
     let p = ctx.manifest_path(name);
     if !p.exists() {
         let avail = list_manifests(ctx);
@@ -146,6 +135,10 @@ fn skills_of(m: &JMap) -> Vec<Json> {
     util::arr_or_empty(m, "skills")
 }
 
+fn entry_name(e: &Json) -> Option<&str> {
+    util::obj(Some(e)).and_then(|m| util::string(m.get("name")))
+}
+
 /// Add skill_name to manifest. Returns true if the manifest was modified.
 pub fn add_skill_to_manifest(
     ctx: &Ctx,
@@ -156,10 +149,7 @@ pub fn add_skill_to_manifest(
 ) -> bool {
     let (p, mut manifest) = read_manifest_raw(ctx, manifest_name);
     let mut skills = skills_of(&manifest);
-    let exists = skills
-        .iter()
-        .any(|e| util::obj(Some(e)).and_then(|m| util::string(m.get("name"))) == Some(skill_name));
-    if exists {
+    if skills.iter().any(|e| entry_name(e) == Some(skill_name)) {
         return false;
     }
     let entry = match repo {
@@ -170,7 +160,7 @@ pub fn add_skill_to_manifest(
         }),
         None => json!({
             "name": skill_name,
-            "path": format!("${{AGENT_SKILLS_REPO}}/skills/{skill_name}"),
+            "path": format!("${{QBRANCH_ROOT}}/skills/{skill_name}"),
         }),
     };
     skills.push(entry);
@@ -187,9 +177,7 @@ pub fn remove_skill_from_manifest(ctx: &Ctx, manifest_name: &str, skill_name: &s
     let before = skills_of(&manifest);
     let after: Vec<Json> = before
         .iter()
-        .filter(|e| {
-            util::obj(Some(e)).and_then(|m| util::string(m.get("name"))) != Some(skill_name)
-        })
+        .filter(|e| entry_name(e) != Some(skill_name))
         .cloned()
         .collect();
     if after.len() == before.len() {
@@ -248,8 +236,7 @@ pub fn parse_git_skill_url(ctx: &Ctx, arg: &str) -> (String, String, String) {
     }
     if parts.len() < 3 {
         die(format!(
-            "invalid git:// skill URL: {}\nexpected: git://<host>/<owner>/<repo>[/<path/to/skill>]",
-            py_repr_str(arg)
+            "invalid git:// skill URL: '{arg}'\nexpected: git://<host>/<owner>/<repo>[/<path/to/skill>]"
         ));
     }
     let (host, owner, repo_part) = (parts[0], parts[1], parts[2]);

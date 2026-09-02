@@ -37,10 +37,19 @@ HANDOFF.md             session handoff, untracked; read it first when it exists
   `cargo build --release`, `QBRANCH_BIN=target/release/qbranch python3 tests/run_corpus.py`.
 - **Two implementations, one behaviour.** Until the first release the Python script is the
   reference and the Rust port mirrors it function for function, message for message. A
-  behaviour change lands in both in the same commit. The corpus only compares dry-run plans,
-  so `python3 tests/run_parity.py` (after `cargo build --release`) applies every case for
-  real with each implementation and diffs what they leave behind; run it too before a
-  commit that touches the apply path, the state file or a report.
+  behaviour change lands in both in the same commit; when the reference does something odd,
+  fix the reference, do not port the oddity. The corpus only compares dry-run plans, so
+  `python3 tests/run_parity.py` (after `cargo build --release`) applies every case for real
+  with each implementation and diffs what they leave behind; run it too before a commit
+  that touches the apply path, the state file or a report.
+- **Link modes are always tested.** Every change to how entries are materialised gets a
+  case in both modes (`copy-mode`, `copy-to-symlink` and the `link` cases are the pattern),
+  and CI runs the corpus on Windows against the binary. Copy mode is forced there with
+  `--link-mode copy`; the automatic Windows fallback is a single probe on top of the same
+  code.
+- **Links, never copies** above means qbranch never writes a file *of its own* into a home
+  directory besides the state file. A copy made in copy mode is a copy of the source,
+  recorded in the state file so it can be refreshed and removed.
 - **Known, deliberate differences.** The port sends its two stray warnings (a failed
   `git pull`, an unparseable marketplace.json) to stderr, where the script prints them to
   stdout, so a `--dry-run --json` plan on stdout stays parseable. Its `--help` is clap's
@@ -55,10 +64,13 @@ HANDOFF.md             session handoff, untracked; read it first when it exists
   hand-edits plugin install state. Plugins are read and changed only through the `claude
   plugin` CLI.
 - **Links, never copies.** The only file qbranch writes in a home directory is the state file;
-  everything else is a symbolic link into a checkout. On Windows this needs Developer Mode, and
-  the Rust port will carry a copy-mode fallback for it.
+  everything else is a symbolic link into a checkout, or in copy mode a tracked copy of one.
+  On Windows links need Developer Mode; without it the default `auto` mode falls back to
+  copies and says so.
 - **No private content.** This repo becomes public. Hostnames, vault items, personal paths and
-  the like belong in the config root, never in the tool, its docs or its fixtures.
+  the like belong in the config root, never in the tool, its docs or its fixtures. That also
+  rules out upgrade shims for layouts only the maintainer's machines ever had: the tool
+  migrates from its own released layouts, not from its prehistory.
 - **Gloss borrowed vocabulary.** Every document opens with a Terms block for the handful of
   terms it leans on and points at `GLOSSARY.md`; a new term goes into the glossary first.
 - **Headers.** Executable files carry the two-line SPDX header; Markdown carries none. `LICENSE`
@@ -70,8 +82,9 @@ HANDOFF.md             session handoff, untracked; read it first when it exists
    machines, growing the corpus as cases arise.
 2. Port to Rust against the corpus: one static binary per platform (macOS and Linux on both
    architectures, Windows), release builds in CI, `cargo install` and GitHub releases. The
-   port passes the corpus on macOS (2026-09-01) and type-checks for Windows and Linux; still
-   open: a copy-mode fallback for Windows without Developer Mode, CI, and release builds.
+   port passes the corpus on macOS (2026-09-01) and type-checks for Windows and Linux. CI
+   (`.github/workflows/ci.yml`) runs the corpus on all three; `release.yml` builds the five
+   binaries on a version tag. Neither has run yet: both wait for the repo to have a remote.
 3. First public push only once the Rust binary exists, so the Python version never ships.
    Until then the remote stays unset.
 

@@ -1,0 +1,7 @@
+{
+  "manifest": "cwd",
+  "env": {
+    "QBRANCH_ROOT": null
+  },
+  "cwd": "root"
+}

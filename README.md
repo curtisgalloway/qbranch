@@ -25,7 +25,8 @@ The full vocabulary is in [GLOSSARY.md](GLOSSARY.md).
 
 1. Links every skill the manifest names, plus every skill each listed skill repo offers, into
    the agent-neutral skills directory `~/.agents/skills/`, and points each harness's own skills
-   directory at it. Links only; nothing is copied.
+   directory at it. Symbolic links by default; copies where links are unavailable (see the
+   Windows note below).
 2. Links instruction files and hooks wherever the manifest says (`~/.claude/CLAUDE.md`,
    `~/.gemini/AGENTS.md`, hook scripts), skipping destinations for a harness that isn't
    installed.
@@ -55,8 +56,15 @@ qbranch --root ~/src/my-agent-config --manifest laptop
 ```
 
 Both the config root and the manifest name are remembered, so afterwards a plain `qbranch`
-re-syncs. For the script, put `~/src/qbranch/bin` on your `PATH` or symlink `bin/qbranch` into
-`~/.local/bin`.
+re-syncs. Without either, qbranch looks for `manifests/` in the current directory and for a
+manifest named after the machine, so `cd my-agent-config && qbranch` works on a machine whose
+manifest carries its hostname. For the script, put `~/src/qbranch/bin` on your `PATH` or
+symlink `bin/qbranch` into `~/.local/bin`.
+
+**Windows.** qbranch makes symbolic links, which Windows allows once Developer Mode is on.
+Without it, qbranch falls back to copying each entry and refreshing the copies on every sync;
+`--link-mode copy` asks for that anywhere (a filesystem without symlinks, say) and
+`--link-mode symlink` insists on links. The choice is remembered.
 
 Everyday commands:
 
@@ -64,6 +72,7 @@ Everyday commands:
 qbranch                       # sync with the remembered root and manifest
 qbranch --dry-run             # show the plan, change nothing
 qbranch --dry-run --json      # the same plan as JSON
+qbranch --link-mode copy      # copies instead of links, from now on; --link-mode auto forgets
 qbranch --list                # manifests in the config root
 qbranch --plugin-status       # managed / unmanaged plugins on this machine
 qbranch --manage-plugin <id> --in base|host [--value false]

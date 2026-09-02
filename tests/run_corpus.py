@@ -5,11 +5,22 @@
 
 Each case under tests/corpus/<name>/ holds:
 
-  case.json      {"manifest": "<name>", "args": [...], "rc": 0,
-                  "stderr_contains": "...", "git_dirs": ["home/src/x"]}
-                 (all but manifest optional; git_dirs names fixture
-                 directories the tool must see as git checkouts — an
-                 empty .git is created in each, since git cannot track one)
+  case.json      the case's shape; every key is optional:
+                   "manifest": "<name>"      passed as --manifest (omit it to
+                                             exercise the default choice)
+                   "args": [...]             extra arguments
+                   "env": {"VAR": "v"|null}  set (or, for null, unset) in the
+                                             tool's environment; <CASE> allowed
+                   "cwd": "root"             working directory, relative to
+                                             the case (default: the case dir)
+                   "mkdirs": ["home/x/.git"] directories to create, for what
+                                             git cannot track (empty dirs,
+                                             .git markers)
+                   "hostname_manifest": "h"  rename root/manifests/h.json to
+                                             this machine's short hostname
+                                             (its name prints as <HOST>)
+                   "rc": 0                   expected exit code
+                   "stderr_contains": "..."  for a refusal, the text to expect
   root/          the config root the tool is pointed at: manifests/,
                  skills/, claude-code/ fragments
   home/          the fake $HOME: .claude/, .agents/skills/, src/<repos>/
@@ -21,9 +32,10 @@ The case is copied to a temporary directory, the literal token <CASE> in
 every .json file is replaced with that directory (so state files can hold
 absolute paths), and the tool runs with HOME, CLAUDE_CONFIG_DIR,
 QBRANCH_ROOT and PATH pointed inside it. Paths in the produced plan are
-normalised back to <CASE> before comparison. Nothing outside the temporary
-directory is touched; the real `claude` is kept off PATH so a case decides
-for itself whether Claude Code "is installed".
+normalised back to <CASE> (and, on Windows, to forward slashes) before
+comparison. Nothing outside the temporary directory is touched; the real
+`claude` is kept off PATH so a case decides for itself whether Claude Code
+"is installed".
 
   python3 tests/run_corpus.py            run every case
   python3 tests/run_corpus.py fresh-machine stale-links
@@ -33,13 +45,15 @@ for itself whether Claude Code "is installed".
   QBRANCH_BIN=target/release/qbranch python3 tests/run_corpus.py
       run the same cases against a compiled port instead of bin/qbranch
 
-This corpus is the specification a port of the tool must satisfy.
+This corpus is the specification every implementation must satisfy;
+run_parity.py builds on the same sandbox to compare two of them.
 """
 import argparse
 import difflib
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -49,6 +63,7 @@ HERE = Path(__file__).resolve().parent
 TOOL = HERE.parent / "bin" / "qbranch"
 CORPUS = HERE / "corpus"
 FAKE_BIN = HERE / "fake-bin"
+WINDOWS = os.name == "nt"
 
 
 def tool_cmd() -> list[str]:
@@ -59,6 +74,11 @@ def tool_cmd() -> list[str]:
     return [sys.executable, str(TOOL)]
 
 
+def short_hostname() -> str:
+    """The same rule the tool uses for its per-host manifest default."""
+    return socket.gethostname().split(".")[0].lower()
+
+
 def substitute(root: Path, token: str, value: str) -> None:
     for p in root.rglob("*.json"):
         text = p.read_text(encoding="utf-8")
@@ -66,54 +86,118 @@ def substitute(root: Path, token: str, value: str) -> None:
             p.write_text(text.replace(token, value), encoding="utf-8")
 
 
-def normalise(obj, case_dir: str):
-    if isinstance(obj, str):
-        return obj.replace(case_dir, "<CASE>")
-    if isinstance(obj, list):
-        return [normalise(x, case_dir) for x in obj]
-    if isinstance(obj, dict):
-        return {k: normalise(v, case_dir) for k, v in obj.items()}
-    return obj
+def install_fake_claude(bin_dir: Path) -> None:
+    """Put the fake `claude` on the case's PATH, as a .cmd shim on Windows."""
+    shutil.copy(FAKE_BIN / "claude", bin_dir / "claude")
+    (bin_dir / "claude").chmod(0o755)
+    if WINDOWS:
+        (bin_dir / "claude.cmd").write_text(
+            f'@"{sys.executable}" "%~dp0claude" %*\r\n', encoding="utf-8")
+
+
+def system_path() -> list[str]:
+    """The minimum PATH the tool needs besides the case's own bin/."""
+    if WINDOWS:
+        return [os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32")]
+    return ["/usr/bin", "/bin"]
+
+
+class Sandbox:
+    """A scratch copy of one corpus case, with the environment the tool sees."""
+
+    def __init__(self, name: str):
+        self.name = name
+        src = CORPUS / name
+        self.spec = json.loads((src / "case.json").read_text())
+        self._tmp = tempfile.TemporaryDirectory(prefix=f"corpus-{name}-")
+        self.dir = str(Path(self._tmp.name).resolve())
+        shutil.copytree(src, self.dir, symlinks=True, dirs_exist_ok=True)
+        substitute(Path(self.dir), "<CASE>", self.dir)
+        for rel in self.spec.get("mkdirs", []):
+            (Path(self.dir) / rel).mkdir(parents=True, exist_ok=True)
+        self.home = Path(self.dir) / "home"
+        self.home.mkdir(exist_ok=True)
+        bin_dir = Path(self.dir) / "bin"
+        bin_dir.mkdir(exist_ok=True)
+        if (Path(self.dir) / "claude.json").is_file():
+            install_fake_claude(bin_dir)
+        self.host = None
+        renamed = self.spec.get("hostname_manifest")
+        if renamed:
+            self.host = short_hostname()
+            manifests = Path(self.dir) / "root" / "manifests"
+            (manifests / f"{renamed}.json").rename(manifests / f"{self.host}.json")
+        self.env = {
+            "HOME": str(self.home),
+            "USERPROFILE": str(self.home),
+            "CLAUDE_CONFIG_DIR": str(self.home / ".claude"),
+            "QBRANCH_ROOT": str(Path(self.dir) / "root"),
+            "QBRANCH_FAKE_CLAUDE_STATE": str(Path(self.dir) / "claude.json"),
+            "QBRANCH_FAKE_CLAUDE_LOG": str(Path(self.dir) / "claude-calls.log"),
+            "PATH": os.pathsep.join([str(bin_dir), *system_path()]),
+            "LANG": "C.UTF-8",
+            "PYTHONDONTWRITEBYTECODE": "1",
+        }
+        if WINDOWS:
+            for k in ("SystemRoot", "TEMP", "TMP", "PATHEXT", "COMSPEC"):
+                if k in os.environ:
+                    self.env[k] = os.environ[k]
+        for k, v in self.spec.get("env", {}).items():
+            if v is None:
+                self.env.pop(k, None)
+            else:
+                self.env[k] = v.replace("<CASE>", self.dir)
+        self.cwd = str(Path(self.dir) / self.spec.get("cwd", "."))
+
+    def argv(self, tool: list[str], extra: list[str]) -> list[str]:
+        cmd = list(tool)
+        if "manifest" in self.spec:
+            cmd += ["--manifest", self.spec["manifest"]]
+        cmd += ["--skills-target", str(self.home / ".agents" / "skills")]
+        cmd += self.spec.get("args", [])
+        return cmd + extra
+
+    def run(self, tool: list[str], extra: list[str]) -> subprocess.CompletedProcess:
+        return subprocess.run(self.argv(tool, extra), capture_output=True,
+                              text=True, env=self.env, cwd=self.cwd,
+                              stdin=subprocess.DEVNULL)
+
+    def norm(self, s: str) -> str:
+        """Replace the case directory (and this host's name) with tokens."""
+        s = s.replace(self.dir, "<CASE>")
+        if WINDOWS:
+            s = s.replace(self.dir.replace("\\", "/"), "<CASE>").replace("\\", "/")
+        if self.host:
+            s = s.replace(self.host, "<HOST>")
+        return s
+
+    def normalise(self, obj):
+        if isinstance(obj, str):
+            return self.norm(obj)
+        if isinstance(obj, list):
+            return [self.normalise(x) for x in obj]
+        if isinstance(obj, dict):
+            return {k: self.normalise(v) for k, v in obj.items()}
+        return obj
+
+    def close(self) -> None:
+        self._tmp.cleanup()
 
 
 def run_case(name: str) -> tuple[dict, int, str]:
-    """Copy the case to a temp dir, run the tool, return (plan, rc, stderr)."""
-    src = CORPUS / name
-    spec = json.loads((src / "case.json").read_text())
-    with tempfile.TemporaryDirectory(prefix=f"corpus-{name}-") as tmp:
-        case_dir = str(Path(tmp).resolve())
-        shutil.copytree(src, case_dir, symlinks=True, dirs_exist_ok=True)
-        substitute(Path(case_dir), "<CASE>", case_dir)
-        for rel in spec.get("git_dirs", []):
-            (Path(case_dir) / rel / ".git").mkdir(parents=True, exist_ok=True)
-        home = Path(case_dir) / "home"
-        home.mkdir(exist_ok=True)
-        bin_dir = Path(case_dir) / "bin"
-        bin_dir.mkdir(exist_ok=True)
-        if (Path(case_dir) / "claude.json").is_file():
-            shutil.copy(FAKE_BIN / "claude", bin_dir / "claude")
-            (bin_dir / "claude").chmod(0o755)
-        env = {
-            "HOME": str(home),
-            "CLAUDE_CONFIG_DIR": str(home / ".claude"),
-            "QBRANCH_ROOT": str(Path(case_dir) / "root"),
-            "QBRANCH_FAKE_CLAUDE_STATE": str(Path(case_dir) / "claude.json"),
-            "QBRANCH_FAKE_CLAUDE_LOG": str(Path(case_dir) / "claude-calls.log"),
-            "PATH": os.pathsep.join([str(bin_dir), "/usr/bin", "/bin"]),
-            "LANG": "C.UTF-8",
-        }
-        cmd = [*tool_cmd(), "--dry-run", "--json",
-               "--manifest", spec["manifest"],
-               "--skills-target", str(home / ".agents" / "skills"),
-               *spec.get("args", [])]
-        r = subprocess.run(cmd, capture_output=True, text=True, env=env)
+    """Run the tool's dry-run plan for one case; return (plan, rc, stderr)."""
+    sb = Sandbox(name)
+    try:
+        r = sb.run(tool_cmd(), ["--dry-run", "--json"])
         plan = None
         if r.stdout.strip():
             try:
-                plan = normalise(json.loads(r.stdout), case_dir)
+                plan = sb.normalise(json.loads(r.stdout))
             except json.JSONDecodeError:
                 plan = {"stdout": r.stdout}
-        return plan, r.returncode, r.stderr.replace(case_dir, "<CASE>")
+        return plan, r.returncode, sb.norm(r.stderr)
+    finally:
+        sb.close()
 
 
 def main() -> int:

@@ -46,24 +46,24 @@ A manifest is a JSON file at manifests/<name>.json with this shape:
         { "path": "${HOME}/src/fuchsia-skills", "plugins": ["fuchsia-skills"] }
       ],
       "skills": [
-        { "name": "learn", "path": "${AGENT_SKILLS_REPO}/skills/learn" },
+        { "name": "learn", "path": "${QBRANCH_ROOT}/skills/learn" },
         { "name": "paniolo", "repo": "git@github.com:user/paniolo.git",
           "path": "skills/paniolo" }
       ],
       "links": [
-        { "src": "${AGENT_SKILLS_REPO}/claude-code/CLAUDE.md",
+        { "src": "${QBRANCH_ROOT}/claude-code/CLAUDE.md",
           "dst": "${HOME}/.claude/CLAUDE.md" },
-        { "src": "${AGENT_SKILLS_REPO}/claude-code/hooks/permission-notify.sh",
+        { "src": "${QBRANCH_ROOT}/claude-code/hooks/permission-notify.sh",
           "dst": "${HOME}/.claude/hooks/permission-notify.sh" },
-        { "src": "${AGENT_SKILLS_REPO}/agy/AGENTS.md",
+        { "src": "${QBRANCH_ROOT}/agy/AGENTS.md",
           "dst": "${HOME}/.gemini/AGENTS.md" }
       ],
       "claude_settings": [
-        "${AGENT_SKILLS_REPO}/claude-code/settings.json",
-        "${AGENT_SKILLS_REPO}/claude-code/settings/hosts/ozone.json"
+        "${QBRANCH_ROOT}/claude-code/settings.json",
+        "${QBRANCH_ROOT}/claude-code/settings/hosts/ozone.json"
       ],
       "agy_settings": [
-        "${AGENT_SKILLS_REPO}/agy/settings.json"
+        "${QBRANCH_ROOT}/agy/settings.json"
       ]
     }
 
@@ -125,17 +125,27 @@ Otherwise the repo is cloned (and kept updated) under
 ~/.agents/skill-repos/<repo-name>/.
 
 Both local path and dst fields support:
-  - ${QBRANCH_ROOT}       (the config root: this checkout, or $QBRANCH_ROOT /
-                           --root; ${AGENT_SKILLS_REPO} is the older alias)
+  - ${QBRANCH_ROOT}       (the config root)
   - any environment variable via ${VAR}
   - a leading ~
+
+The config root is --root, else $QBRANCH_ROOT, else the root the last sync
+remembered in the state file, else the current directory when it holds
+manifests/. The manifest is --manifest, else the last synced one, else the
+one named after this host, else `default`.
+
+Links are symbolic links by default. `--link-mode copy` materialises every
+entry as a copy instead (refreshed on each sync, removed when dropped), for
+filesystems or Windows setups without symlinks; the default `auto` falls
+back to copies on Windows when symlinks are unavailable. The choice is
+remembered like --root; `--link-mode auto` forgets it.
 
 The script:
   - Symlinks each entry into its destination, creating parent dirs as needed.
   - Refuses to overwrite a non-symlink at the destination.
   - Tracks every destination it created in
-    <skills_target>/.agent-skills-state.json so swapping manifests removes
-    stale symlinks even when they pointed at paths outside this repo.
+    <skills_target>/.qbranch-state.json so swapping manifests removes
+    stale links (and copies) even when they pointed outside this repo.
   - Registers the marketplaces and installs the plugins the merged
     claude_settings policy declares, via the `claude plugin` CLI.
   - `--plugin-status [--json]` classifies this machine's plugins as
@@ -155,17 +165,17 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
+import tempfile
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 
-# The config root: manifests/, skills/ and claude-code/ live here. Normally
-# the checkout this script sits in; QBRANCH_ROOT or --root points elsewhere,
-# which is how the test corpus feeds it fixtures.
-REPO = Path(os.environ.get("QBRANCH_ROOT")
-            or Path(__file__).resolve().parent.parent).expanduser().resolve()
+# The config root: manifests/, skills/ and claude-code/ live here. Set once
+# per run by resolve_root() before anything reads it.
+REPO = Path(".")
 DEFAULT_SKILLS_TARGET = Path.home() / ".agents" / "skills"
 STATE_FILE_NAME = ".qbranch-state.json"
 LEGACY_STATE_FILE_NAME = ".agent-skills-state.json"
@@ -175,11 +185,14 @@ VERSION = "0.2.0"
 # than MANIFEST_SCHEMA is refused, so the upgrade path is forward-only.
 MANIFEST_SCHEMA = 2
 STATE_SCHEMA = 2
-# Skill repos a schema-1 manifest discovered implicitly. Schema 2 lists them
-# under `skill_repos`; the 1 -> 2 migration materializes exactly these.
-DEFAULT_SKILL_REPOS = ["${HOME}/src/public-skills", "${HOME}/src/fuchsia-skills"]
 SKILL_REPOS_CACHE = Path.home() / ".agents" / "skill-repos"
-LEGACY_SKILL_REPOS_CACHE = Path.home() / ".claude" / "skill-repos"
+# How a manifest entry is materialised: a symbolic link, or a copy that is
+# refreshed on every sync. `auto` is symlink, falling back to copy on Windows
+# when the process may not create links.
+LINK_MODES = ("auto", "symlink", "copy")
+# Never copied into a copy of a skills directory, and ignored when checking
+# whether a copy is up to date.
+COPY_IGNORE = {STATE_FILE_NAME, LEGACY_STATE_FILE_NAME}
 # Claude Code relocates its whole config dir via CLAUDE_CONFIG_DIR; honor it
 # so a sync against a scratch config dir exercises the real code paths.
 CLAUDE_DIR = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
@@ -206,7 +219,6 @@ OFFICIAL_MARKETPLACE_SOURCE = {
 
 def expand_path(raw: str) -> Path:
     s = raw.replace("${QBRANCH_ROOT}", str(REPO))
-    s = s.replace("${AGENT_SKILLS_REPO}", str(REPO))
     s = os.path.expandvars(s)
     return Path(s).expanduser()
 
@@ -240,8 +252,7 @@ def resolve_repo_local(repo_url: str) -> Path:
 
     Checks ~/src/<name> first (convention); if that's a git checkout it is
     used as-is. Otherwise clones into ~/.agents/skill-repos/<name>/ and pulls
-    on every subsequent sync. A pre-existing clone in the legacy
-    ~/.claude/skill-repos/<name>/ location is honored.
+    on every subsequent sync.
     """
     name = repo_name_from_url(repo_url)
 
@@ -250,17 +261,14 @@ def resolve_repo_local(repo_url: str) -> Path:
         return local
 
     cache = SKILL_REPOS_CACHE / name
-    legacy_cache = LEGACY_SKILL_REPOS_CACHE / name
-    if not (cache.is_dir() and (cache / ".git").exists()) \
-            and legacy_cache.is_dir() and (legacy_cache / ".git").exists():
-        cache = legacy_cache
     if cache.is_dir() and (cache / ".git").exists():
         result = subprocess.run(
             ["git", "-C", str(cache), "pull", "--ff-only"],
             capture_output=True, text=True,
         )
         if result.returncode != 0:
-            print(f"warning: git pull failed for {name}: {result.stderr.strip()}")
+            print(f"warning: git pull failed for {name}: {result.stderr.strip()}",
+                  file=sys.stderr)
     else:
         SKILL_REPOS_CACHE.mkdir(parents=True, exist_ok=True)
         subprocess.run(["git", "clone", repo_url, str(cache)], check=True)
@@ -334,13 +342,13 @@ def migrate_manifest(name: str, m: dict) -> tuple[dict, list[str]]:
     """
     v = m.get("schema", 1)
     if not isinstance(v, int) or v > MANIFEST_SCHEMA:
-        sys.exit(f"manifest {name!r} is schema {v}; qbranch {VERSION} "
+        sys.exit(f"manifest '{name}' is schema {v}; qbranch {VERSION} "
                  f"understands up to schema {MANIFEST_SCHEMA} — update the tool")
     notes: list[str] = []
     if v < 2:
-        m.setdefault("skill_repos", [{"path": p} for p in DEFAULT_SKILL_REPOS])
-        notes.append("schema 1 -> 2: skill_repos materialized from the "
-                     "built-in defaults")
+        m.setdefault("skill_repos", [])
+        notes.append("schema 1 -> 2: skill_repos added (empty); list the "
+                     "checkouts whose skills should be linked in bulk")
     if notes:
         m = {"schema": MANIFEST_SCHEMA,
              **{k: val for k, val in m.items() if k != "schema"}}
@@ -352,9 +360,6 @@ def load_manifest(name: str) -> tuple[dict, list[str]]:
 
     Returns (manifest, upgrade_notes); notes are empty for a current one.
     """
-    if not (REPO / "manifests").is_dir():
-        sys.exit(f"no manifests/ under {REPO} — pass --root <config root> "
-                 f"(remembered after the first sync) or set QBRANCH_ROOT")
     p = REPO / "manifests" / f"{name}.json"
     if not p.exists():
         sys.exit(f"manifest not found: {p}\n"
@@ -384,57 +389,183 @@ def list_manifests() -> list[str]:
     return sorted(p.stem for p in d.glob("*.json")) if d.is_dir() else []
 
 
+def empty_state() -> dict:
+    return {"manifest": None, "links": [], "copies": []}
+
+
 def load_state(state_path: Path) -> dict:
-    """Load sync state, falling back to the legacy ~/.claude/skills location."""
+    """Load sync state; an older sync's .agent-skills-state.json beside it counts."""
     if not state_path.exists():
-        candidates = [state_path.parent / LEGACY_STATE_FILE_NAME]
-        if not CLAUDE_SKILLS_LINK.is_symlink():
-            candidates += [CLAUDE_SKILLS_LINK / STATE_FILE_NAME,
-                           CLAUDE_SKILLS_LINK / LEGACY_STATE_FILE_NAME]
-        for legacy in candidates:
-            if legacy.is_file():
-                state_path = legacy
-                break
+        legacy = state_path.parent / LEGACY_STATE_FILE_NAME
+        if legacy.is_file():
+            state_path = legacy
     if not state_path.exists():
-        return {"manifest": None, "links": []}
+        return empty_state()
     try:
         data = json.loads(state_path.read_text())
     except json.JSONDecodeError:
-        return {"manifest": None, "links": []}
+        return empty_state()
     if data.get("schema", 1) > STATE_SCHEMA:
         sys.exit(f"{state_path} was written by a newer qbranch "
                  f"(state schema {data['schema']}, this tool: {STATE_SCHEMA}) "
                  f"— update the tool")
-    if "names" in data and "links" not in data:
-        skills_target = state_path.parent
-        data["links"] = [str(skills_target / n) for n in data["names"]]
     data.setdefault("links", [])
+    data.setdefault("copies", [])
     return data
 
 
-def adopt_remembered_root(explicit: bool, state: dict) -> None:
-    """Use the config root the last sync recorded, unless one was given.
+def resolve_root(explicit: str | None, state: dict) -> None:
+    """Pick the config root for this run and store it in REPO.
 
-    The root is passed once (--root or QBRANCH_ROOT) and remembered in the
-    state file, so a plain `qbranch` afterwards knows where the manifests
-    are even though the tool no longer lives inside the config repo.
+    --root wins, then $QBRANCH_ROOT, then the root the last sync remembered
+    in the state file, then the current directory when it holds manifests/.
+    A root given explicitly must hold manifests/; a remembered one that no
+    longer does is skipped.
     """
-    if explicit or os.environ.get("QBRANCH_ROOT"):
-        return
-    remembered = state.get("root")
-    if remembered and (Path(remembered) / "manifests").is_dir():
-        globals()["REPO"] = Path(remembered)
+    candidates: list[tuple[str, Path]] = []
+    if explicit:
+        candidates.append(("--root", Path(explicit)))
+    if os.environ.get("QBRANCH_ROOT"):
+        candidates.append(("QBRANCH_ROOT", Path(os.environ["QBRANCH_ROOT"])))
+    if state.get("root"):
+        candidates.append(("remembered", Path(state["root"])))
+    candidates.append(("cwd", Path.cwd()))
+    for how, raw in candidates:
+        p = raw.expanduser().resolve()
+        if (p / "manifests").is_dir():
+            globals()["REPO"] = p
+            return
+        if how in ("--root", "QBRANCH_ROOT"):
+            sys.exit(f"no manifests/ under {p} ({how})")
+    sys.exit("no config root: pass --root <dir> (remembered afterwards), set "
+             "QBRANCH_ROOT, or run from a directory that holds manifests/")
+
+
+def short_hostname() -> str:
+    """This machine's name as a manifest name: the first label, lowercased."""
+    return socket.gethostname().split(".")[0].lower()
+
+
+def choose_manifest(explicit: str | None, state: dict) -> str:
+    """--manifest, else the last synced one, else this host's, else `default`."""
+    if explicit:
+        return explicit
+    if state.get("manifest"):
+        return state["manifest"]
+    available = list_manifests()
+    for candidate in (short_hostname(), "default"):
+        if candidate in available:
+            return candidate
+    sys.exit("no manifest chosen: pass --manifest <name> (remembered "
+             f"afterwards); available: {', '.join(available) or '(none)'}")
+
+
+def symlinks_available() -> bool:
+    """Whether this process may create symbolic links (a Windows privilege)."""
+    probe = Path(tempfile.gettempdir()) / f".qbranch-probe-{os.getpid()}"
+    try:
+        probe.symlink_to("qbranch-probe-target")
+    except OSError:
+        return False
+    probe.unlink()
+    return True
+
+
+def decide_link_mode(
+    requested: str | None, state: dict, notes: list[str]
+) -> tuple[str, str | None]:
+    """The link mode for this run, and the choice to remember.
+
+    --link-mode (or $QBRANCH_LINK_MODE) wins and is remembered; `auto`
+    forgets a remembered choice. Otherwise the remembered choice applies,
+    else auto: symlinks, falling back to copies on Windows when the process
+    may not create them.
+    """
+    chosen = requested or os.environ.get("QBRANCH_LINK_MODE") or None
+    if chosen is not None and chosen not in LINK_MODES:
+        sys.exit(f"--link-mode must be one of {', '.join(LINK_MODES)}, "
+                 f"not '{chosen}'")
+    remembered = state.get("link_mode")
+    if remembered not in ("symlink", "copy"):
+        remembered = None
+    if chosen is None:
+        chosen = remembered or "auto"
+    elif chosen == "auto":
+        remembered = None
+    else:
+        remembered = chosen
+    if chosen != "auto":
+        return chosen, remembered
+    if os.name == "nt" and not symlinks_available():
+        notes.append("symbolic links are unavailable here (on Windows, enable "
+                     "Developer Mode to use them) — copying instead; "
+                     "--link-mode symlink insists on links")
+        return "copy", remembered
+    return "symlink", remembered
+
+
+def remove_path(p: Path) -> None:
+    """Remove a link, a file or a whole directory tree at p."""
+    if p.is_symlink() or p.is_file():
+        p.unlink()
+    elif p.is_dir():
+        shutil.rmtree(p)
+
+
+def copy_path(src: Path, dst: Path) -> None:
+    """Copy src to dst (a directory tree or one file), replacing what is there.
+
+    Symlinks inside src are followed, so the copy stands on its own; the
+    state file is left out of a copied skills directory.
+    """
+    remove_path(dst)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if src.is_dir():
+        shutil.copytree(
+            src, dst, symlinks=False,
+            ignore=lambda _d, names: [n for n in names if n in COPY_IGNORE])
+    else:
+        shutil.copy(src, dst)
+
+
+def copy_up_to_date(src: Path, dst: Path) -> bool:
+    """Whether dst is a faithful copy of src: same tree, same bytes."""
+    if dst.is_symlink():
+        return False
+    if src.is_dir():
+        return dst.is_dir() and trees_equal(src, dst)
+    return dst.is_file() and src.read_bytes() == dst.read_bytes()
+
+
+def trees_equal(a: Path, b: Path) -> bool:
+    names_a = sorted(n.name for n in a.iterdir() if n.name not in COPY_IGNORE)
+    names_b = sorted(n.name for n in b.iterdir() if n.name not in COPY_IGNORE)
+    if names_a != names_b:
+        return False
+    for n in names_a:
+        pa, pb = a / n, b / n
+        if pb.is_symlink():
+            return False
+        if pa.is_dir():
+            if not pb.is_dir() or not trees_equal(pa, pb):
+                return False
+        elif not pb.is_file() or pa.read_bytes() != pb.read_bytes():
+            return False
+    return True
 
 
 def save_state(state_path: Path, manifest_name: str, links: list[Path],
+               copies: list[Path], link_mode: str | None,
                settings_applied: dict[str, dict]) -> None:
     """Write the state file. `settings_applied` maps state key -> policy."""
     state_path.write_text(json.dumps({
         "schema": STATE_SCHEMA,
         "manifest": manifest_name,
         "root": str(REPO),
+        "link_mode": link_mode,
         "linked_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "links": sorted({str(p) for p in links}),
+        "copies": sorted({str(p) for p in copies}),
         **{k: v or {} for k, v in sorted(settings_applied.items())},
     }, indent=2) + "\n")
     legacy = state_path.parent / LEGACY_STATE_FILE_NAME
@@ -500,7 +631,8 @@ def read_marketplace(repo: Path) -> dict | None:
     try:
         return json.loads(p.read_text())
     except json.JSONDecodeError as e:
-        print(f"warning: {p}: {e} — treating {repo.name} as a plain skill repo")
+        print(f"warning: {p}: {e} — treating {repo.name} as a plain skill repo",
+              file=sys.stderr)
         return None
 
 
@@ -522,7 +654,8 @@ def repo_skill_dirs(
     if mkt is None:
         if only_plugins:
             warnings.append(f"{repo.name}: no marketplace.json, so the "
-                            f"'plugins' filter {only_plugins} is ignored")
+                            f"'plugins' filter ({', '.join(map(str, only_plugins))}) "
+                            f"is ignored")
         return [(d, "") for d in scan_skill_dirs(repo / "skills")], "", warnings
 
     entries = [e for e in (mkt.get("plugins") or []) if isinstance(e, dict)]
@@ -530,7 +663,7 @@ def repo_skill_dirs(
         names = {e.get("name") for e in entries}
         for want in only_plugins:
             if want not in names:
-                warnings.append(f"{repo.name}: marketplace has no plugin {want!r}")
+                warnings.append(f"{repo.name}: marketplace has no plugin '{want}'")
         entries = [e for e in entries if e.get("name") in only_plugins]
 
     out: list[tuple[Path, str]] = []
@@ -647,7 +780,7 @@ def add_skill_to_manifest(
     else:
         entry = {
             "name": skill_name,
-            "path": f"${{AGENT_SKILLS_REPO}}/skills/{skill_name}",
+            "path": f"${{QBRANCH_ROOT}}/skills/{skill_name}",
         }
     manifest.setdefault("skills", []).append(entry)
     p.write_text(json.dumps(manifest, indent=2) + "\n")
@@ -903,7 +1036,7 @@ def plan_claude_plugins(
         spec = marketplace_add_spec(entry)
         if spec is None:
             failures.append(
-                f"plugins: marketplace {name}: unsupported source {entry!r}")
+                f"plugins: marketplace {name}: unsupported source {json.dumps(entry)}")
             continue
         actions.append(("add-mkt", name,
                         ["claude", "plugin", "marketplace", "add", spec]))
@@ -912,7 +1045,7 @@ def plan_claude_plugins(
         mkt = pid.rpartition("@")[2] if "@" in pid else ""
         if mkt and mkt not in known_names and mkt not in want_mkts:
             failures.append(
-                f"plugins: {pid}: marketplace {mkt!r} is not registered — "
+                f"plugins: {pid}: marketplace '{mkt}' is not registered — "
                 f"add it to extraKnownMarketplaces in a fragment")
             continue
         actions.append(("install", pid,
@@ -1071,7 +1204,7 @@ def manage_plugin(
     else:
         raw = host_fragment_of(fragments)
         if raw is None:
-            raw = f"${{AGENT_SKILLS_REPO}}/claude-code/settings/hosts/{manifest_name}.json"
+            raw = f"${{QBRANCH_ROOT}}/claude-code/settings/hosts/{manifest_name}.json"
             fragments.append(raw)
             manifest["claude_settings"] = fragments
             mpath.write_text(json.dumps(manifest, indent=2) + "\n")
@@ -1352,11 +1485,12 @@ def run_plugin_action(argv: list[str]) -> str | None:
     return " ".join(lines[-2:]) or f"exit {result.returncode}"
 
 
-def migrate_skills_dir(dst: Path, src: Path) -> str | None:
-    """Convert a real per-agent skills directory into a symlink to src.
+def migrate_skills_dir(dst: Path, src: Path, copying: bool) -> str | None:
+    """Replace a real per-agent skills directory with a link to (or copy of) src.
 
-    Stale symlinks inside have already been removed by the cleanup pass.
-    Returns an error message, or None on success.
+    Stale symlinks inside have already been removed by the cleanup pass; the
+    directory must be empty apart from a state file. Returns an error
+    message, or None on success.
     """
     for junk in (dst / STATE_FILE_NAME, dst / LEGACY_STATE_FILE_NAME,
                  dst / ".DS_Store"):
@@ -1368,7 +1502,10 @@ def migrate_skills_dir(dst: Path, src: Path) -> str | None:
         leftover = ", ".join(sorted(p.name for p in dst.iterdir()))
         return (f"{dst} is a directory and still contains: {leftover} — "
                 f"move these aside and re-run")
-    dst.symlink_to(src)
+    if copying:
+        copy_path(src, dst)
+    else:
+        dst.symlink_to(src)
     return None
 
 
@@ -1379,7 +1516,8 @@ def main() -> int:
     )
     ap.add_argument("--manifest", "-m",
                     help="Manifest name under manifests/ (without .json). "
-                         "Default: last used, or 'default' on first run.")
+                         "Default: the last synced one, else this host's name, "
+                         "else 'default'.")
     ap.add_argument("--skills-target", "-t",
                     default=str(DEFAULT_SKILLS_TARGET),
                     help=f"Where 'skills' entries get linked "
@@ -1390,13 +1528,21 @@ def main() -> int:
                          "--json, print the plan as JSON instead.")
     ap.add_argument("--root", metavar="DIR",
                     help="Config root holding manifests/, skills/ and "
-                         "claude-code/ (default: this checkout, or "
-                         "$QBRANCH_ROOT).")
+                         "claude-code/. Default: $QBRANCH_ROOT, else the root "
+                         "remembered by the last sync, else the current "
+                         "directory.")
+    ap.add_argument("--link-mode", choices=LINK_MODES,
+                    help="How entries are materialised: symlink (the default "
+                         "where links work), copy (copied and refreshed on "
+                         "every sync, for filesystems or Windows setups without "
+                         "symlinks), auto (symlink, falling back to copy on "
+                         "Windows without Developer Mode). Remembered like "
+                         "--root; auto forgets.")
     ap.add_argument("--list", action="store_true",
                     help="List available manifests and exit.")
     ap.add_argument("--add-skill", "-a", metavar="SKILL",
                     help="Add SKILL to the target manifest(s) and exit. "
-                         "Path defaults to ${AGENT_SKILLS_REPO}/skills/SKILL.")
+                         "Path defaults to ${QBRANCH_ROOT}/skills/SKILL.")
     ap.add_argument("--remove-skill", "-r", metavar="SKILL",
                     help="Remove SKILL from the target manifest(s) and exit.")
     ap.add_argument("--repo", metavar="URL",
@@ -1441,26 +1587,27 @@ def main() -> int:
                          "plugin wherever the fragment applies; false pins it "
                          "disabled there. Default: true.")
     args = ap.parse_args()
-    if args.root:
-        globals()["REPO"] = Path(args.root).expanduser().resolve()
+
+    skills_target = Path(args.skills_target).expanduser()
+    state_path = skills_target / STATE_FILE_NAME
 
     if args.list:
+        resolve_root(args.root, load_state(state_path))
         for n in list_manifests():
             print(n)
         return 0
 
     if args.upgrade_manifests:
+        resolve_root(args.root, load_state(state_path))
         return upgrade_manifests()
 
     if args.plugin_status or args.manage_plugin or args.audit:
-        state_path = Path(args.skills_target).expanduser() / STATE_FILE_NAME
         state = load_state(state_path)
-        adopt_remembered_root(bool(args.root), state)
-        manifest_name = args.manifest or state.get("manifest") or "default"
+        resolve_root(args.root, state)
+        manifest_name = choose_manifest(args.manifest, state)
         if args.audit:
             manifest, _ = load_manifest(manifest_name)
-            report, fails = audit(manifest_name, manifest, state,
-                                  Path(args.skills_target).expanduser())
+            report, fails = audit(manifest_name, manifest, state, skills_target)
             if args.json:
                 print(json.dumps({**report, "errors": fails}, indent=2))
             else:
@@ -1495,69 +1642,78 @@ def main() -> int:
         sys.exit("--add-skill and --remove-skill are mutually exclusive")
 
     if args.add_skill or args.remove_skill:
-        adding = bool(args.add_skill)
-        skill_name = args.add_skill if adding else args.remove_skill
-
-        repo_url = args.repo
-        skill_path_arg = args.skill_path
-
-        if adding and skill_name.startswith("git://"):
-            skill_name, repo_url, skill_path_arg = parse_git_skill_url(skill_name)
-
-        if adding:
-            if repo_url:
-                local_root = Path.home() / "src" / repo_name_from_url(repo_url)
-                if not local_root.is_dir():
-                    print(f"note: {local_root} not found — will clone on sync")
-            else:
-                skill_dir = REPO / "skills" / skill_name
-                if not skill_dir.is_dir():
-                    print(f"error: {skill_dir} not found")
-                    return 2
-
-        add_kwargs = {}
-        if adding and repo_url:
-            add_kwargs["repo"] = repo_url
-            add_kwargs["skill_path"] = skill_path_arg
-
-        def fn_with_kwargs(mname: str, sname: str) -> bool:
-            if adding:
-                return add_skill_to_manifest(mname, sname, **add_kwargs)
-            return remove_skill_from_manifest(mname, sname)
-
-        if args.all_manifests:
-            targets = list_manifests()
-            if not targets:
-                sys.exit("no manifests found")
-            for mname in targets:
-                changed = fn_with_kwargs(mname, skill_name)
-                if adding:
-                    status = "added" if changed else "already present"
-                else:
-                    status = "removed" if changed else "not present"
-                print(f"  {status:<15}  {mname}")
-            print(f"\nRemember to run qbranch on each machine to apply.")
-            return 0
-        else:
-            state_path = Path(args.skills_target).expanduser() / STATE_FILE_NAME
-            state = load_state(state_path)
-            adopt_remembered_root(bool(args.root), state)
-            manifest_name = args.manifest or state.get("manifest") or "default"
-            changed = fn_with_kwargs(manifest_name, skill_name)
-            if adding:
-                verb, already = "added to", "already in"
-            else:
-                verb, already = "removed from", "not in"
-            if changed:
-                print(f"{skill_name!r} {verb} manifest '{manifest_name}'")
-                print(f"Run qbranch to apply.")
-            else:
-                print(f"{skill_name!r} {already} manifest '{manifest_name}'")
-            return 0
+        state = load_state(state_path)
+        resolve_root(args.root, state)
+        return edit_skill(args, state)
 
     if args.json and not args.dry_run:
         sys.exit("--json on a sync needs --dry-run (it prints the plan); "
                  "--plugin-status and --audit have their own JSON reports")
+    return sync(args, skills_target, state_path)
+
+
+def edit_skill(args: argparse.Namespace, state: dict) -> int:
+    """--add-skill / --remove-skill against one manifest or all of them."""
+    adding = bool(args.add_skill)
+    skill_name = args.add_skill if adding else args.remove_skill
+
+    repo_url = args.repo
+    skill_path_arg = args.skill_path
+
+    if adding and skill_name.startswith("git://"):
+        skill_name, repo_url, skill_path_arg = parse_git_skill_url(skill_name)
+
+    if adding:
+        if repo_url:
+            local_root = Path.home() / "src" / repo_name_from_url(repo_url)
+            if not local_root.is_dir():
+                print(f"note: {local_root} not found — will clone on sync")
+        else:
+            skill_dir = REPO / "skills" / skill_name
+            if not skill_dir.is_dir():
+                print(f"error: {skill_dir} not found", file=sys.stderr)
+                return 2
+
+    add_kwargs = {}
+    if adding and repo_url:
+        add_kwargs["repo"] = repo_url
+        add_kwargs["skill_path"] = skill_path_arg
+
+    def apply(mname: str, sname: str) -> bool:
+        if adding:
+            return add_skill_to_manifest(mname, sname, **add_kwargs)
+        return remove_skill_from_manifest(mname, sname)
+
+    if args.all_manifests:
+        targets = list_manifests()
+        if not targets:
+            sys.exit("no manifests found")
+        for mname in targets:
+            changed = apply(mname, skill_name)
+            if adding:
+                status = "added" if changed else "already present"
+            else:
+                status = "removed" if changed else "not present"
+            print(f"  {status:<15}  {mname}")
+        print(f"\nRemember to run qbranch on each machine to apply.")
+        return 0
+
+    manifest_name = choose_manifest(args.manifest, state)
+    changed = apply(manifest_name, skill_name)
+    if adding:
+        verb, already = "added to", "already in"
+    else:
+        verb, already = "removed from", "not in"
+    if changed:
+        print(f"'{skill_name}' {verb} manifest '{manifest_name}'")
+        print(f"Run qbranch to apply.")
+    else:
+        print(f"'{skill_name}' {already} manifest '{manifest_name}'")
+    return 0
+
+
+def sync(args: argparse.Namespace, skills_target: Path, state_path: Path) -> int:
+    """Plan the sync, print it (text or JSON), apply it unless --dry-run."""
     messages: list[dict] = []
 
     def say(level: str, text: str) -> None:
@@ -1572,26 +1728,21 @@ def main() -> int:
         else:
             print(f"{level}: {text}")
 
-    skills_target = Path(args.skills_target).expanduser()
-    fresh_target = skills_target.is_symlink()
-    if fresh_target:
-        # e.g. an old ~/.agents/skills → ~/.claude/skills link; the generic
-        # dir is the primary now, so it must be a real directory.
-        say("note", f"{skills_target} was a symlink -> "
-                    f"{skills_target.readlink()} — replacing with a real directory")
-        if not args.dry_run:
-            skills_target.unlink()
     if not args.dry_run:
         skills_target.mkdir(parents=True, exist_ok=True)
-    state_path = skills_target / STATE_FILE_NAME
 
     state = load_state(state_path)
-    adopt_remembered_root(bool(args.root), state)
-    manifest_name = args.manifest or state.get("manifest") or "default"
+    resolve_root(args.root, state)
+    manifest_name = choose_manifest(args.manifest, state)
     manifest, upgrade_notes = load_manifest(manifest_name)
     for n in upgrade_notes:
-        say("note", f"manifest {manifest_name!r}: {n} (in memory; run "
+        say("note", f"manifest '{manifest_name}': {n} (in memory; run "
                     f"--upgrade-manifests to rewrite manifests/)")
+    mode_notes: list[str] = []
+    link_mode, remembered_mode = decide_link_mode(args.link_mode, state, mode_notes)
+    for n in mode_notes:
+        say("note", n)
+    copying = link_mode == "copy"
     claude_ok = claude_installed()
     agy_ok = agy_installed()
 
@@ -1649,6 +1800,7 @@ def main() -> int:
 
     desired_dsts = {dst for _, _, dst in desired}
     previous_dsts = {Path(p) for p in state.get("links", [])}
+    previous_copies = {Path(p) for p in state.get("copies", [])}
 
     # The live settings.json is managed by the settings merge, not as a
     # link — keep the remove pass away from it even if an old state file
@@ -1664,7 +1816,10 @@ def main() -> int:
         if dst.is_symlink():
             actions.append(("remove", dst.name, None, dst,
                             f"-> {dst.readlink()} (not in manifest)"))
+        elif dst in previous_copies and dst.exists():
+            actions.append(("remove", dst.name, None, dst, "copy (not in manifest)"))
 
+    create = "copy" if copying else "link"
     for label, src, dst in desired:
         if not src.exists() and not (args.dry_run and src == skills_target):
             # A MISS never reaches `final`, so its dst never lands in the
@@ -1678,26 +1833,33 @@ def main() -> int:
                 note = "source missing (will remove stale link)"
             actions.append(("MISS", label, src, dst, note))
             continue
-        if fresh_target and skills_target in dst.parents:
-            # skills_target was just (or, on dry-run, would be) replaced with
-            # an empty directory — nothing under it can pre-exist.
-            actions.append(("link", label, src, dst, ""))
-            continue
         if dst.is_symlink():
             cur_raw = Path(os.readlink(dst))
             cur = (dst.parent / cur_raw).resolve() if not cur_raw.is_absolute() else cur_raw.resolve()
             if cur == src.resolve():
                 actions.append(("ok", label, src, dst, ""))
+            elif copying:
+                actions.append(("copy", label, src, dst, f"was: link -> {cur_raw}"))
             else:
                 actions.append(("relink", label, src, dst, f"was: {cur_raw}"))
+        elif dst in previous_copies and dst.exists():
+            # A copy an earlier sync made: refresh it, or turn it back into
+            # a link if the mode changed.
+            if not copying:
+                actions.append(("relink", label, src, dst, "was: copy"))
+            elif copy_up_to_date(src, dst):
+                actions.append(("ok", label, src, dst, "copy"))
+            else:
+                actions.append(("copy", label, src, dst, "refresh"))
         elif dst.is_dir() and dst in (CLAUDE_SKILLS_LINK, AGY_SKILLS_LINK):
             actions.append(("migrate", label, src, dst,
-                            "dir -> symlink (after stale links removed)"))
+                            f"dir -> {'copy' if copying else 'symlink'} "
+                            f"(after stale links removed)"))
         elif dst.exists():
             actions.append(("WARN", label, src, dst,
                             "non-symlink at destination — leaving alone"))
         else:
-            actions.append(("link", label, src, dst, ""))
+            actions.append((create, label, src, dst, ""))
 
     if not args.json:
         label_w = max(
@@ -1731,6 +1893,7 @@ def main() -> int:
             "manifest": manifest_name,
             "dry_run": True,
             "skills_target": str(skills_target),
+            "link_mode": link_mode,
             "claude": claude_ok,
             "agy": agy_ok,
             "desired": len(desired_dsts),
@@ -1750,22 +1913,23 @@ def main() -> int:
 
     print()
     print(f"manifest={manifest_name}  desired={len(desired_dsts)}  "
-          f"skills_target={skills_target}  claude={'yes' if claude_ok else 'no'}"
-          f"  agy={'yes' if agy_ok else 'no'}")
+          f"skills_target={skills_target}  link_mode={link_mode}  "
+          f"claude={'yes' if claude_ok else 'no'}  agy={'yes' if agy_ok else 'no'}")
 
     if args.dry_run:
         print("(dry run — no changes made)")
         return 1 if settings_failures else 0
 
     final: list[Path] = []
+    copies: list[Path] = []
     had_error = bool(settings_failures)
     failures: list[str] = list(settings_failures)
     for op, label, src, dst, note in actions:
         try:
             if op == "remove":
-                dst.unlink()
+                remove_path(dst)
             elif op == "relink":
-                dst.unlink()
+                remove_path(dst)
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 dst.symlink_to(src)
                 final.append(dst)
@@ -1773,16 +1937,24 @@ def main() -> int:
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 dst.symlink_to(src)
                 final.append(dst)
+            elif op == "copy":
+                copy_path(src, dst)
+                final.append(dst)
+                copies.append(dst)
             elif op == "ok":
                 final.append(dst)
+                if dst in previous_copies and not dst.is_symlink():
+                    copies.append(dst)
             elif op == "migrate":
-                msg = migrate_skills_dir(dst, src)
+                msg = migrate_skills_dir(dst, src, copying)
                 if msg:
                     print(f"ERROR: {label}: {msg}", file=sys.stderr)
                     failures.append(f"{label}: {msg}")
                     had_error = True
                 else:
                     final.append(dst)
+                    if copying:
+                        copies.append(dst)
             elif op == "WARN":
                 msg = f"{label}: non-symlink at {dst} — refusing to overwrite"
                 print(f"ERROR: {msg}", file=sys.stderr)
@@ -1822,7 +1994,8 @@ def main() -> int:
             # snapshot so a future sync can still retract what an older
             # policy asserted.
             applied_policy[skey] = state.get(skey) or {}
-    save_state(state_path, manifest_name, final, applied_policy)
+    save_state(state_path, manifest_name, final, copies, remembered_mode,
+               applied_policy)
 
     if failures:
         offer_claude(failures)

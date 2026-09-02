@@ -1,0 +1,25 @@
+{
+  "schema": 2,
+  "name": "host",
+  "description": "corpus case host: no manifest chosen or remembered; the one named after this machine wins",
+  "skill_repos": [],
+  "skills": [
+    {
+      "name": "alpha",
+      "path": "${QBRANCH_ROOT}/skills/alpha"
+    },
+    {
+      "name": "beta",
+      "path": "${QBRANCH_ROOT}/skills/beta"
+    }
+  ],
+  "links": [
+    {
+      "src": "${QBRANCH_ROOT}/claude-code/CLAUDE.md",
+      "dst": "${HOME}/.claude/CLAUDE.md"
+    }
+  ],
+  "claude_settings": [
+    "${QBRANCH_ROOT}/claude-code/settings.json"
+  ]
+}

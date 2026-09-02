@@ -1,0 +1,25 @@
+{
+  "schema": 2,
+  "name": "empty",
+  "description": "corpus case empty: ~/.claude/skills exists as an empty real directory",
+  "skill_repos": [],
+  "skills": [
+    {
+      "name": "alpha",
+      "path": "${QBRANCH_ROOT}/skills/alpha"
+    },
+    {
+      "name": "beta",
+      "path": "${QBRANCH_ROOT}/skills/beta"
+    }
+  ],
+  "links": [
+    {
+      "src": "${QBRANCH_ROOT}/claude-code/CLAUDE.md",
+      "dst": "${HOME}/.claude/CLAUDE.md"
+    }
+  ],
+  "claude_settings": [
+    "${QBRANCH_ROOT}/claude-code/settings.json"
+  ]
+}

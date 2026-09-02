@@ -8,7 +8,7 @@ use crate::ctx::Ctx;
 use crate::manifest::{local_checkout, repo_name_from_url};
 use crate::paths;
 use crate::proc;
-use crate::util::{self, die, display, py_repr, JMap};
+use crate::util::{self, die, display, JMap};
 use serde_json::Value as Json;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
@@ -26,21 +26,15 @@ pub struct Desired {
 ///
 /// Checks ~/src/<name> first (convention); if that's a git checkout it is
 /// used as-is. Otherwise clones into ~/.agents/skill-repos/<name>/ and pulls
-/// on every subsequent sync. A pre-existing clone in the legacy
-/// ~/.claude/skill-repos/<name>/ location is honored.
+/// on every subsequent sync.
 pub fn resolve_repo_local(ctx: &Ctx, repo_url: &str) -> PathBuf {
     let name = repo_name_from_url(repo_url);
     let local = local_checkout(ctx, repo_url);
     if local.is_dir() && local.join(".git").exists() {
         return local;
     }
-    let is_checkout = |p: &Path| p.is_dir() && p.join(".git").exists();
-    let mut cache = ctx.skill_repos_cache.join(&name);
-    let legacy_cache = ctx.legacy_skill_repos_cache.join(&name);
-    if !is_checkout(&cache) && is_checkout(&legacy_cache) {
-        cache = legacy_cache;
-    }
-    if is_checkout(&cache) {
+    let cache = ctx.skill_repos_cache.join(&name);
+    if cache.is_dir() && cache.join(".git").exists() {
         let argv: Vec<String> = ["git", "-C", &display(&cache), "pull", "--ff-only"]
             .iter()
             .map(|s| s.to_string())
@@ -209,9 +203,10 @@ pub fn repo_skill_dirs(
     let repo_name = paths::name(repo);
     let Some(mkt) = read_marketplace(repo) else {
         if let Some(only) = only_plugins {
+            let shown: Vec<String> = only.iter().map(util::py_str).collect();
             warnings.push(format!(
-                "{repo_name}: no marketplace.json, so the 'plugins' filter {} is ignored",
-                py_repr(&Json::Array(only.clone()))
+                "{repo_name}: no marketplace.json, so the 'plugins' filter ({}) is ignored",
+                shown.join(", ")
             ));
         }
         let dirs = scan_skill_dirs(&repo.join("skills"))
@@ -232,8 +227,8 @@ pub fn repo_skill_dirs(
         for want in only {
             if !names.contains(want) {
                 warnings.push(format!(
-                    "{repo_name}: marketplace has no plugin {}",
-                    py_repr(want)
+                    "{repo_name}: marketplace has no plugin '{}'",
+                    util::py_str(want)
                 ));
             }
         }
@@ -401,8 +396,8 @@ pub fn frontmatter_description(skill_dir: &Path) -> String {
     out.join(" ")
 }
 
-/// Directory names under `<root>/skills` (any directory), sorted, whose
-/// resolved path is not in `linked`.
+/// Directory names under `<root>/skills`, sorted, whose resolved path is
+/// not in `linked`. With `skills_only`, just those holding a SKILL.md.
 pub fn unlinked_repo_skill_dirs(root: &Path, linked: &[PathBuf], skills_only: bool) -> Vec<String> {
     let repo_skills = root.join("skills");
     let children: Vec<PathBuf> = if skills_only {

@@ -1,7 +1,7 @@
 {
   "schema": 2,
-  "name": "legacy",
-  "description": "corpus case legacy: ~/.claude/skills is still a real directory from an older sync",
+  "name": "occupied",
+  "description": "corpus case occupied: ~/.claude/skills is a real directory holding the user's own skill",
   "skill_repos": [],
   "skills": [
     {

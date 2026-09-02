@@ -1,27 +1,14 @@
 {
   "tool": "0.2.0",
   "schema": 2,
-  "manifest": "legacy",
+  "manifest": "empty",
   "dry_run": true,
   "skills_target": "<CASE>/home/.agents/skills",
+  "link_mode": "symlink",
   "claude": true,
   "agy": false,
   "desired": 4,
   "actions": [
-    {
-      "op": "remove",
-      "label": "alpha",
-      "src": null,
-      "dst": "<CASE>/home/.claude/skills/alpha",
-      "note": "-> ../../../root/skills/alpha (not in manifest)"
-    },
-    {
-      "op": "remove",
-      "label": "old",
-      "src": null,
-      "dst": "<CASE>/home/.claude/skills/old",
-      "note": "-> ../../../root/skills/beta (not in manifest)"
-    },
     {
       "op": "link",
       "label": "alpha",

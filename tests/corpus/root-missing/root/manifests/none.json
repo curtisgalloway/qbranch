@@ -1,0 +1,25 @@
+{
+  "schema": 2,
+  "name": "none",
+  "description": "corpus case none: nothing says where the config root is",
+  "skill_repos": [],
+  "skills": [
+    {
+      "name": "alpha",
+      "path": "${QBRANCH_ROOT}/skills/alpha"
+    },
+    {
+      "name": "beta",
+      "path": "${QBRANCH_ROOT}/skills/beta"
+    }
+  ],
+  "links": [
+    {
+      "src": "${QBRANCH_ROOT}/claude-code/CLAUDE.md",
+      "dst": "${HOME}/.claude/CLAUDE.md"
+    }
+  ],
+  "claude_settings": [
+    "${QBRANCH_ROOT}/claude-code/settings.json"
+  ]
+}

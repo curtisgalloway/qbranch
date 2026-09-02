@@ -4,6 +4,7 @@
   "manifest": "bare",
   "dry_run": true,
   "skills_target": "<CASE>/home/.agents/skills",
+  "link_mode": "symlink",
   "claude": false,
   "agy": false,
   "desired": 2,

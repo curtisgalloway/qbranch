@@ -1,0 +1,6 @@
+{
+  "manifest": "fresh",
+  "env": {
+    "QBRANCH_LINK_MODE": "copy"
+  }
+}

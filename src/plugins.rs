@@ -8,7 +8,7 @@ use crate::ctx::{official_marketplace_source, Ctx, OFFICIAL_MARKETPLACE};
 use crate::paths;
 use crate::proc;
 use crate::settings::load_fragments;
-use crate::util::{self, die, display, py_repr, JMap};
+use crate::util::{self, die, display, py_dumps, JMap};
 use serde_json::{json, Value as Json};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
@@ -190,7 +190,7 @@ pub fn plan_claude_plugins(
             }),
             None => failures.push(format!(
                 "plugins: marketplace {name}: unsupported source {}",
-                py_repr(entry)
+                py_dumps(entry)
             )),
         }
     }
@@ -199,8 +199,7 @@ pub fn plan_claude_plugins(
         let mkt = plugin_marketplace_of(pid);
         if !mkt.is_empty() && !known_names.contains(&mkt) && !want_mkts.contains_key(&mkt) {
             failures.push(format!(
-                "plugins: {pid}: marketplace {} is not registered — add it to extraKnownMarketplaces in a fragment",
-                util::py_repr_str(&mkt)
+                "plugins: {pid}: marketplace '{mkt}' is not registered — add it to extraKnownMarketplaces in a fragment"
             ));
             continue;
         }
@@ -417,7 +416,7 @@ pub fn print_plugin_status(report: &JMap) {
         };
         let value = info
             .get("value")
-            .map(|v| v.to_string())
+            .map(py_dumps)
             .unwrap_or_else(|| "null".to_string());
         let fragment = paths::name(Path::new(&util::py_get_str(&info, "fragment")));
         println!("  {pid:<48} {value:<6} {state}, {on}  [{fragment}]");
@@ -497,9 +496,8 @@ pub fn manage_plugin(
         match host_fragment_of(&fragments) {
             Some(r) => r,
             None => {
-                let r = format!(
-                    "${{AGENT_SKILLS_REPO}}/claude-code/settings/hosts/{manifest_name}.json"
-                );
+                let r =
+                    format!("${{QBRANCH_ROOT}}/claude-code/settings/hosts/{manifest_name}.json");
                 fragments.push(json!(r));
                 manifest.insert(
                     "claude_settings".to_string(),
@@ -533,7 +531,7 @@ pub fn manage_plugin(
             notes.push(format!(
                 "note: {pid} is also declared in {} as {}; later fragments win",
                 display(p),
-                v
+                py_dumps(v)
             ));
         }
     }
@@ -570,16 +568,25 @@ pub fn manage_plugin(
                 .find(|m| util::string(m.get("name")) == Some(mkt.as_str()));
             match marketplace_entry_from_cli(row) {
                 Some(entry) => {
-                    let mkts = frag.entry("extraKnownMarketplaces".to_string()).or_insert_with(|| json!({}));
+                    let mkts = frag
+                        .entry("extraKnownMarketplaces".to_string())
+                        .or_insert_with(|| json!({}));
                     if !mkts.is_object() {
                         *mkts = json!({});
                     }
                     mkts.as_object_mut().unwrap().insert(mkt.clone(), entry);
-                    notes.push(format!("declared marketplace {mkt} in {}", paths::name(&fpath)));
+                    notes.push(format!(
+                        "declared marketplace {mkt} in {}",
+                        paths::name(&fpath)
+                    ));
                 }
                 None => failures.push(format!(
                     "marketplace {mkt} is not registered here{}; add it to extraKnownMarketplaces in {} by hand",
-                    if err.is_empty() { String::new() } else { format!(" ({err})") },
+                    if err.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" ({err})")
+                    },
                     display(&fpath)
                 )),
             }
@@ -596,7 +603,7 @@ pub fn manage_plugin(
     }
     notes.push(format!(
         "{pid} = {} in {}",
-        Json::Bool(value),
+        py_dumps(&Json::Bool(value)),
         display(&fpath)
     ));
     (notes, failures)

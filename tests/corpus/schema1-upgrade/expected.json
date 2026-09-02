@@ -4,6 +4,7 @@
   "manifest": "old",
   "dry_run": true,
   "skills_target": "<CASE>/home/.agents/skills",
+  "link_mode": "symlink",
   "claude": true,
   "agy": false,
   "desired": 4,
@@ -42,15 +43,7 @@
   "messages": [
     {
       "level": "note",
-      "text": "manifest 'old': schema 1 -> 2: skill_repos materialized from the built-in defaults (in memory; run --upgrade-manifests to rewrite manifests/)"
-    },
-    {
-      "level": "note",
-      "text": "skill repo <CASE>/home/src/public-skills not found \u2014 clone it, or drop it from the manifest's skill_repos"
-    },
-    {
-      "level": "note",
-      "text": "skill repo <CASE>/home/src/fuchsia-skills not found \u2014 clone it, or drop it from the manifest's skill_repos"
+      "text": "manifest 'old': schema 1 -> 2: skill_repos added (empty); list the checkouts whose skills should be linked in bulk (in memory; run --upgrade-manifests to rewrite manifests/)"
     },
     {
       "level": "skipped",

@@ -4,6 +4,7 @@
 //! manifest and the state file, print the plan (as text or JSON), and
 //! apply it unless this is a dry run.
 
+use crate::copy::{copy_path, copy_up_to_date, remove_path, symlinks_available};
 use crate::ctx::{Ctx, LEGACY_STATE_FILE_NAME, MANIFEST_SCHEMA, STATE_FILE_NAME, VERSION};
 use crate::manifest::{load_manifest, manifest_skill_srcs};
 use crate::paths;
@@ -11,20 +12,26 @@ use crate::plugins::{plan_claude_plugins, run_plugin_action, PluginAction};
 use crate::proc;
 use crate::settings::sync_settings;
 use crate::skills::{collect_desired, collect_repo_skills, unlinked_repo_skill_dirs};
-use crate::state::{adopt_remembered_root, load_state, previous_links, save_state};
-use crate::util::{self, die, display, py_repr_str, JMap};
+use crate::state::{
+    choose_manifest, load_state, previous_copies, previous_links, resolve_root, save_state,
+};
+use crate::util::{self, die, display, JMap};
 use serde_json::{json, Value as Json};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::env;
 use std::fs;
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
+
+pub const LINK_MODES: [&str; 3] = ["auto", "symlink", "copy"];
 
 pub struct SyncArgs {
     pub manifest: Option<String>,
     pub skills_target: PathBuf,
     pub dry_run: bool,
     pub json: bool,
-    pub root_given: bool,
+    pub root: Option<String>,
+    pub link_mode: Option<String>,
 }
 
 /// Messages recorded for the plan; printed unless building JSON.
@@ -63,11 +70,60 @@ struct AgentSpec {
     installed: bool,
 }
 
-/// Convert a real per-agent skills directory into a symlink to src.
+/// The link mode for this run, and the choice to remember.
 ///
-/// Stale symlinks inside have already been removed by the cleanup pass.
-/// Returns an error message, or None on success.
-fn migrate_skills_dir(dst: &Path, src: &Path) -> Option<String> {
+/// --link-mode (or $QBRANCH_LINK_MODE) wins and is remembered; `auto`
+/// forgets a remembered choice. Otherwise the remembered choice applies,
+/// else auto: symlinks, falling back to copies on Windows when the process
+/// may not create them.
+fn decide_link_mode(
+    requested: Option<&str>,
+    state: &JMap,
+    notes: &mut Vec<String>,
+) -> (String, Option<String>) {
+    let env_mode = env::var("QBRANCH_LINK_MODE").ok().filter(|s| !s.is_empty());
+    let chosen = requested.map(str::to_string).or(env_mode);
+    if let Some(c) = &chosen {
+        if !LINK_MODES.contains(&c.as_str()) {
+            die(format!(
+                "--link-mode must be one of {}, not '{c}'",
+                LINK_MODES.join(", ")
+            ));
+        }
+    }
+    let mut remembered = util::string(state.get("link_mode"))
+        .filter(|m| *m == "symlink" || *m == "copy")
+        .map(str::to_string);
+    let chosen = match chosen {
+        None => remembered.clone().unwrap_or_else(|| "auto".to_string()),
+        Some(c) if c == "auto" => {
+            remembered = None;
+            c
+        }
+        Some(c) => {
+            remembered = Some(c.clone());
+            c
+        }
+    };
+    if chosen != "auto" {
+        return (chosen, remembered);
+    }
+    if cfg!(windows) && !symlinks_available() {
+        notes.push(
+            "symbolic links are unavailable here (on Windows, enable Developer Mode to use them) — copying instead; --link-mode symlink insists on links"
+                .to_string(),
+        );
+        return ("copy".to_string(), remembered);
+    }
+    ("symlink".to_string(), remembered)
+}
+
+/// Replace a real per-agent skills directory with a link to (or copy of) src.
+///
+/// Stale symlinks inside have already been removed by the cleanup pass; the
+/// directory must be empty apart from a state file. Returns an error
+/// message, or None on success.
+fn migrate_skills_dir(dst: &Path, src: &Path, copying: bool) -> Option<String> {
     for junk in [STATE_FILE_NAME, LEGACY_STATE_FILE_NAME, ".DS_Store"] {
         let p = dst.join(junk);
         if p.is_file() {
@@ -89,7 +145,12 @@ fn migrate_skills_dir(dst: &Path, src: &Path) -> Option<String> {
             leftover.join(", ")
         ));
     }
-    match paths::symlink(src, dst) {
+    let made = if copying {
+        copy_path(src, dst)
+    } else {
+        paths::symlink(src, dst)
+    };
+    match made {
         Ok(()) => None,
         Err(e) => Some(format!("{}: {e}", display(dst))),
     }
@@ -126,35 +187,12 @@ fn link(src: &Path, dst: &Path) -> io::Result<()> {
 }
 
 pub fn run(ctx: &mut Ctx, args: &SyncArgs) -> i32 {
-    if args.json && !args.dry_run {
-        die("--json on a sync needs --dry-run (it prints the plan); --plugin-status and --audit have their own JSON reports");
-    }
     let mut say = Say {
         json: args.json,
         messages: Vec::new(),
     };
 
     let skills_target = args.skills_target.clone();
-    let fresh_target = paths::is_symlink(&skills_target);
-    if fresh_target {
-        // e.g. an old ~/.agents/skills -> ~/.claude/skills link; the generic
-        // dir is the primary now, so it must be a real directory.
-        let target = paths::read_link(&skills_target)
-            .map(|p| display(&p))
-            .unwrap_or_default();
-        say.say(
-            "note",
-            format!(
-                "{} was a symlink -> {target} — replacing with a real directory",
-                display(&skills_target)
-            ),
-        );
-        if !args.dry_run {
-            if let Err(e) = paths::unlink(&skills_target) {
-                die(format!("{}: {e}", display(&skills_target)));
-            }
-        }
-    }
     if !args.dry_run {
         if let Err(e) = fs::create_dir_all(&skills_target) {
             die(format!("{}: {e}", display(&skills_target)));
@@ -162,27 +200,25 @@ pub fn run(ctx: &mut Ctx, args: &SyncArgs) -> i32 {
     }
     let state_path = skills_target.join(STATE_FILE_NAME);
 
-    let state = load_state(ctx, &state_path);
-    adopt_remembered_root(ctx, args.root_given, &state);
-    let manifest_name = args
-        .manifest
-        .clone()
-        .or_else(|| {
-            util::string(state.get("manifest"))
-                .filter(|s| !s.is_empty())
-                .map(str::to_string)
-        })
-        .unwrap_or_else(|| "default".to_string());
+    let state = load_state(&state_path);
+    resolve_root(ctx, args.root.as_deref(), &state);
+    let manifest_name = choose_manifest(ctx, args.manifest.as_deref(), &state);
     let (manifest, upgrade_notes) = load_manifest(ctx, &manifest_name);
     for n in upgrade_notes {
         say.say(
             "note",
             format!(
-                "manifest {}: {n} (in memory; run --upgrade-manifests to rewrite manifests/)",
-                py_repr_str(&manifest_name)
+                "manifest '{manifest_name}': {n} (in memory; run --upgrade-manifests to rewrite manifests/)"
             ),
         );
     }
+    let mut mode_notes = Vec::new();
+    let (link_mode, remembered_mode) =
+        decide_link_mode(args.link_mode.as_deref(), &state, &mut mode_notes);
+    for n in mode_notes {
+        say.say("note", n);
+    }
+    let copying = link_mode == "copy";
     let claude_ok = ctx.claude_installed();
     let agy_ok = ctx.agy_installed();
 
@@ -271,6 +307,7 @@ pub fn run(ctx: &mut Ctx, args: &SyncArgs) -> i32 {
 
     let desired_dsts: HashSet<PathBuf> = desired.iter().map(|d| d.dst.clone()).collect();
     let previous_dsts: BTreeSet<PathBuf> = previous_links(&state).into_iter().collect();
+    let prev_copies: HashSet<PathBuf> = previous_copies(&state).into_iter().collect();
 
     // The live settings.json is managed by the settings merge, not as a
     // link: keep the remove pass away from it even if an old state file
@@ -297,9 +334,18 @@ pub fn run(ctx: &mut Ctx, args: &SyncArgs) -> i32 {
                 dst: dst.clone(),
                 note: format!("-> {target} (not in manifest)"),
             });
+        } else if prev_copies.contains(dst) && dst.exists() {
+            actions.push(Action {
+                op: "remove",
+                label: paths::name(dst),
+                src: None,
+                dst: dst.clone(),
+                note: "copy (not in manifest)".to_string(),
+            });
         }
     }
 
+    let create: &'static str = if copying { "copy" } else { "link" };
     for d in &desired {
         if !d.src.exists() && !(args.dry_run && d.src == skills_target) {
             // A MISS never reaches `final`, so its dst never lands in the
@@ -329,12 +375,6 @@ pub fn run(ctx: &mut Ctx, args: &SyncArgs) -> i32 {
             dst: d.dst.clone(),
             note,
         };
-        if fresh_target && d.dst.starts_with(&skills_target) && d.dst != skills_target {
-            // skills_target was just (or, on dry-run, would be) replaced with
-            // an empty directory: nothing under it can pre-exist.
-            actions.push(action("link", String::new()));
-            continue;
-        }
         if paths::is_symlink(&d.dst) {
             let cur_raw = paths::read_link(&d.dst).unwrap_or_default();
             let cur = if cur_raw.is_absolute() {
@@ -344,15 +384,33 @@ pub fn run(ctx: &mut Ctx, args: &SyncArgs) -> i32 {
             };
             if cur == paths::resolve(&d.src) {
                 actions.push(action("ok", String::new()));
+            } else if copying {
+                actions.push(action(
+                    "copy",
+                    format!("was: link -> {}", display(&cur_raw)),
+                ));
             } else {
                 actions.push(action("relink", format!("was: {}", display(&cur_raw))));
+            }
+        } else if prev_copies.contains(&d.dst) && d.dst.exists() {
+            // A copy an earlier sync made: refresh it, or turn it back into
+            // a link if the mode changed.
+            if !copying {
+                actions.push(action("relink", "was: copy".to_string()));
+            } else if copy_up_to_date(&d.src, &d.dst) {
+                actions.push(action("ok", "copy".to_string()));
+            } else {
+                actions.push(action("copy", "refresh".to_string()));
             }
         } else if d.dst.is_dir()
             && (d.dst == ctx.claude_skills_link || d.dst == ctx.agy_skills_link)
         {
             actions.push(action(
                 "migrate",
-                "dir -> symlink (after stale links removed)".to_string(),
+                format!(
+                    "dir -> {} (after stale links removed)",
+                    if copying { "copy" } else { "symlink" }
+                ),
             ));
         } else if d.dst.exists() {
             actions.push(action(
@@ -360,7 +418,7 @@ pub fn run(ctx: &mut Ctx, args: &SyncArgs) -> i32 {
                 "non-symlink at destination — leaving alone".to_string(),
             ));
         } else {
-            actions.push(action("link", String::new()));
+            actions.push(action(create, String::new()));
         }
     }
 
@@ -411,6 +469,7 @@ pub fn run(ctx: &mut Ctx, args: &SyncArgs) -> i32 {
             "manifest": manifest_name,
             "dry_run": true,
             "skills_target": display(&skills_target),
+            "link_mode": link_mode,
             "claude": claude_ok,
             "agy": agy_ok,
             "desired": desired_dsts.len(),
@@ -432,7 +491,7 @@ pub fn run(ctx: &mut Ctx, args: &SyncArgs) -> i32 {
 
     println!();
     println!(
-        "manifest={manifest_name}  desired={}  skills_target={}  claude={}  agy={}",
+        "manifest={manifest_name}  desired={}  skills_target={}  link_mode={link_mode}  claude={}  agy={}",
         desired_dsts.len(),
         display(&skills_target),
         if claude_ok { "yes" } else { "no" },
@@ -445,6 +504,7 @@ pub fn run(ctx: &mut Ctx, args: &SyncArgs) -> i32 {
     }
 
     let mut final_links: Vec<PathBuf> = Vec::new();
+    let mut copies: Vec<PathBuf> = Vec::new();
     let mut had_error = !settings_failures.is_empty();
     let mut failures: Vec<String> = settings_failures.clone();
     let fail = |msg: String, failures: &mut Vec<String>, had_error: &mut bool| {
@@ -455,23 +515,31 @@ pub fn run(ctx: &mut Ctx, args: &SyncArgs) -> i32 {
     for a in &actions {
         let src = a.src.clone().unwrap_or_default();
         let result: io::Result<()> = match a.op {
-            "remove" => paths::unlink(&a.dst),
-            "relink" => paths::unlink(&a.dst)
+            "remove" => remove_path(&a.dst),
+            "relink" => remove_path(&a.dst)
                 .and_then(|_| link(&src, &a.dst))
-                .map(|_| {
-                    final_links.push(a.dst.clone());
-                }),
-            "link" => link(&src, &a.dst).map(|_| {
+                .map(|_| final_links.push(a.dst.clone())),
+            "link" => link(&src, &a.dst).map(|_| final_links.push(a.dst.clone())),
+            "copy" => copy_path(&src, &a.dst).map(|_| {
                 final_links.push(a.dst.clone());
+                copies.push(a.dst.clone());
             }),
             "ok" => {
                 final_links.push(a.dst.clone());
+                if prev_copies.contains(&a.dst) && !paths::is_symlink(&a.dst) {
+                    copies.push(a.dst.clone());
+                }
                 Ok(())
             }
             "migrate" => {
-                match migrate_skills_dir(&a.dst, &src) {
+                match migrate_skills_dir(&a.dst, &src, copying) {
                     Some(msg) => fail(format!("{}: {msg}", a.label), &mut failures, &mut had_error),
-                    None => final_links.push(a.dst.clone()),
+                    None => {
+                        final_links.push(a.dst.clone());
+                        if copying {
+                            copies.push(a.dst.clone());
+                        }
+                    }
                 }
                 Ok(())
             }
@@ -548,6 +616,8 @@ pub fn run(ctx: &mut Ctx, args: &SyncArgs) -> i32 {
         &state_path,
         &manifest_name,
         &final_links,
+        &copies,
+        remembered_mode.as_deref(),
         &applied_policy,
     );
 

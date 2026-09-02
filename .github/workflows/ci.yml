@@ -1,0 +1,52 @@
+# SPDX-FileCopyrightText: 2026 Curtis Galloway
+# SPDX-License-Identifier: Apache-2.0
+#
+# Every push and pull request: format and lint the port, build it, run the
+# corpus against the Python reference and against the binary, and diff
+# what the two leave behind. Windows runs the binary only: the reference
+# never ships there.
+
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Let git create real symlinks (the corpus fixtures hold some)
+        if: runner.os == 'Windows'
+        run: git config --global core.symlinks true
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo build --release
+      - name: Corpus against the Python reference
+        if: runner.os != 'Windows'
+        run: python tests/run_corpus.py
+      - name: Corpus against the binary
+        run: python tests/run_corpus.py
+        env:
+          QBRANCH_BIN: ${{ runner.os == 'Windows' && 'target/release/qbranch.exe' || 'target/release/qbranch' }}
+      - name: Corpus against the binary in copy mode
+        run: python tests/run_corpus.py copy-mode copy-to-symlink
+        env:
+          QBRANCH_BIN: ${{ runner.os == 'Windows' && 'target/release/qbranch.exe' || 'target/release/qbranch' }}
+      - name: Apply parity, reference versus binary
+        if: runner.os != 'Windows'
+        run: python tests/run_parity.py

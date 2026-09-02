@@ -1,0 +1,6 @@
+{
+  "manifest": "mem",
+  "env": {
+    "QBRANCH_ROOT": null
+  }
+}

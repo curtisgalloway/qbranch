@@ -1,0 +1,12 @@
+{
+  "schema": 2,
+  "manifest": "back",
+  "link_mode": "copy",
+  "links": [
+    "<CASE>/home/.agents/skills/alpha",
+    "<CASE>/home/.agents/skills/beta"
+  ],
+  "copies": [
+    "<CASE>/home/.agents/skills/alpha"
+  ]
+}

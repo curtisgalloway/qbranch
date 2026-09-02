@@ -1,13 +1,13 @@
 // SPDX-FileCopyrightText: 2026 Curtis Galloway
 // SPDX-License-Identifier: Apache-2.0
 //! Constants and the per-run environment: the config root and every
-//! harness path the tool touches, derived once from HOME, CLAUDE_CONFIG_DIR
-//! and QBRANCH_ROOT the way the reference script derives its globals.
+//! harness path the tool touches, derived once from HOME and
+//! CLAUDE_CONFIG_DIR the way the reference script derives its globals.
 
 use crate::paths;
 use serde_json::{json, Value as Json};
 use std::env;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 pub const VERSION: &str = "0.2.0";
 /// Manifests carry a `schema` (1 when absent). Older schemas are upgraded in
@@ -17,10 +17,9 @@ pub const MANIFEST_SCHEMA: i64 = 2;
 pub const STATE_SCHEMA: i64 = 2;
 pub const STATE_FILE_NAME: &str = ".qbranch-state.json";
 pub const LEGACY_STATE_FILE_NAME: &str = ".agent-skills-state.json";
-/// Skill repos a schema-1 manifest discovered implicitly. Schema 2 lists them
-/// under `skill_repos`; the 1 -> 2 migration materializes exactly these.
-pub const DEFAULT_SKILL_REPOS: [&str; 2] =
-    ["${HOME}/src/public-skills", "${HOME}/src/fuchsia-skills"];
+/// Never copied into a copy of a skills directory, and ignored when checking
+/// whether a copy is up to date.
+pub const COPY_IGNORE: [&str; 2] = [STATE_FILE_NAME, LEGACY_STATE_FILE_NAME];
 /// Claude Code registers its own marketplace on first interactive run, but the
 /// `claude plugin` CLI does not: on a fresh config dir it must be added like
 /// any other before an official plugin can be installed.
@@ -31,12 +30,12 @@ pub fn official_marketplace_source() -> Json {
 }
 
 pub struct Ctx {
-    /// The config root: manifests/, skills/ and claude-code/ live here.
+    /// The config root: manifests/, skills/ and claude-code/ live here. Set
+    /// once per run by `state::resolve_root` before anything reads it.
     pub repo: PathBuf,
     pub home: PathBuf,
     pub default_skills_target: PathBuf,
     pub skill_repos_cache: PathBuf,
-    pub legacy_skill_repos_cache: PathBuf,
     /// Claude Code relocates its whole config dir via CLAUDE_CONFIG_DIR.
     pub claude_dir: PathBuf,
     pub claude_skills_link: PathBuf,
@@ -56,25 +55,9 @@ fn env_nonempty(name: &str) -> Option<String> {
     env::var(name).ok().filter(|s| !s.is_empty())
 }
 
-/// The reference script lived in `<config root>/bin`, so its default root
-/// was two levels up from itself. Keep that for a binary run from a
-/// checkout's bin/; an installed binary relies on --root, QBRANCH_ROOT or
-/// the root remembered in the state file.
-fn default_root() -> PathBuf {
-    env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().and_then(Path::parent).map(Path::to_path_buf))
-        .unwrap_or_else(|| PathBuf::from("."))
-}
-
 impl Ctx {
     pub fn from_env() -> Ctx {
         let home = paths::home_dir();
-        let repo = match env_nonempty("QBRANCH_ROOT") {
-            Some(s) => paths::clean(&s),
-            None => default_root(),
-        };
-        let repo = paths::resolve(&paths::expanduser(&repo, &home));
         let config_dir = env_nonempty("CLAUDE_CONFIG_DIR");
         let claude_dir = match &config_dir {
             Some(s) => paths::clean(s),
@@ -88,10 +71,9 @@ impl Ctx {
         let agy_dir = home.join(".gemini");
         let agy_cli_dir = agy_dir.join("antigravity-cli");
         Ctx {
-            repo,
+            repo: PathBuf::from("."),
             default_skills_target: home.join(".agents").join("skills"),
             skill_repos_cache: home.join(".agents").join("skill-repos"),
-            legacy_skill_repos_cache: home.join(".claude").join("skill-repos"),
             claude_skills_link: claude_dir.join("skills"),
             claude_settings_file: claude_dir.join("settings.json"),
             claude_dir,
@@ -104,13 +86,9 @@ impl Ctx {
         }
     }
 
-    /// Expand a manifest path: `${QBRANCH_ROOT}` (and its older alias
-    /// `${AGENT_SKILLS_REPO}`), any `${VAR}`, and a leading `~`.
+    /// Expand a manifest path: `${QBRANCH_ROOT}`, any `${VAR}`, a leading `~`.
     pub fn expand(&self, raw: &str) -> PathBuf {
-        let root = self.repo.to_string_lossy();
-        let s = raw
-            .replace("${QBRANCH_ROOT}", &root)
-            .replace("${AGENT_SKILLS_REPO}", &root);
+        let s = raw.replace("${QBRANCH_ROOT}", &self.repo.to_string_lossy());
         let s = paths::expandvars(&s);
         paths::expanduser(&paths::clean(&s), &self.home)
     }
