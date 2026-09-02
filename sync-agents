@@ -17,9 +17,12 @@ The sync has three parts:
      (CLAUDE.md, hooks, ...) are applied, ~/.claude/skills is symlinked to
      the generic skills directory so Claude sees the same skill set, and the
      `claude_settings` policy fragments are MERGED into the app-owned
-     ~/.claude/settings.json (see below). If ~/.claude/skills is still a
-     real directory from an older sync, it is converted automatically once
-     stale symlinks are cleaned up.
+     ~/.claude/settings.json (see below). Then plugins are reconciled: any
+     marketplace the merged policy names in `extraKnownMarketplaces` and
+     any plugin it enables in `enabledPlugins` that is missing locally is
+     registered/installed through the `claude plugin` CLI. If
+     ~/.claude/skills is still a real directory from an older sync, it is
+     converted automatically once stale symlinks are cleaned up.
 
   3. Antigravity (only if agy is installed — `agy` on PATH or
      ~/.gemini/antigravity-cli/ present): `links` entries with destinations
@@ -75,6 +78,16 @@ sync (unless the app changed its value in the meantime). Claude Code does
 NOT read a user-level ~/.claude/settings.local.json (verified empirically,
 v2.1.167) — that's why merging, not file-splitting, is used here.
 
+Plugins ride on the same fragments. `extraKnownMarketplaces` names the
+marketplaces to register and `enabledPlugins` (id -> true) the plugins to
+install at user scope; after the merge, whatever is missing locally is
+added via `claude plugin marketplace add` / `claude plugin install`. An
+installed plugin with no enabledPlugins entry is disabled as far as Claude
+Code is concerned, so a plugin dropped from the fragments is disabled by
+the ordinary settings retraction and reported — never uninstalled, since
+that would delete its data directory. Plugins installed locally but absent
+from every fragment are reported, like skills missing from the manifest.
+
 `agy_settings` is the same thing for Antigravity, targeting the app-owned
 ~/.gemini/antigravity-cli/settings.json. That file mixes policy (the
 permission allowlist) with app state (theme), so it gets merged rather
@@ -100,6 +113,8 @@ The script:
   - Tracks every destination it created in
     <skills_target>/.agent-skills-state.json so swapping manifests removes
     stale symlinks even when they pointed at paths outside this repo.
+  - Registers the marketplaces and installs the plugins the merged
+    claude_settings policy declares, via the `claude plugin` CLI.
 """
 
 from __future__ import annotations
@@ -126,7 +141,9 @@ PUBLIC_SKILL_REPOS = [
 ]
 SKILL_REPOS_CACHE = Path.home() / ".agents" / "skill-repos"
 LEGACY_SKILL_REPOS_CACHE = Path.home() / ".claude" / "skill-repos"
-CLAUDE_DIR = Path.home() / ".claude"
+# Claude Code relocates its whole config dir via CLAUDE_CONFIG_DIR; honor it
+# so a sync against a scratch config dir exercises the real code paths.
+CLAUDE_DIR = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
 CLAUDE_SKILLS_LINK = CLAUDE_DIR / "skills"
 CLAUDE_SETTINGS_FILE = CLAUDE_DIR / "settings.json"
 # Antigravity keeps its harness state under ~/.gemini: instruction files at
@@ -135,6 +152,13 @@ AGY_DIR = Path.home() / ".gemini"
 AGY_CLI_DIR = AGY_DIR / "antigravity-cli"
 AGY_SKILLS_LINK = AGY_CLI_DIR / "skills"
 AGY_SETTINGS_FILE = AGY_CLI_DIR / "settings.json"
+# Claude Code registers its own marketplace on first interactive run, but the
+# `claude plugin` CLI does not — on a fresh config dir it must be added like
+# any other before an official plugin can be installed.
+OFFICIAL_MARKETPLACE = "claude-plugins-official"
+OFFICIAL_MARKETPLACE_SOURCE = {
+    "source": {"source": "github", "repo": "anthropics/claude-plugins-official"}
+}
 
 
 def expand_path(raw: str) -> Path:
@@ -570,6 +594,127 @@ def sync_settings(
     return notes, policy, failures
 
 
+def claude_cli_json(*args: str) -> tuple[list | None, str]:
+    """Run `claude <args> --json` and parse its output. Returns (data, error)."""
+    cmd = ["claude", *args, "--json"]
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, stdin=subprocess.DEVNULL,
+            timeout=120,
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return None, f"{' '.join(cmd)}: {e}"
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip()
+        return None, f"{' '.join(cmd)}: exit {result.returncode}: {detail}"
+    try:
+        return json.loads(result.stdout), ""
+    except json.JSONDecodeError as e:
+        return None, f"{' '.join(cmd)}: unparseable output: {e}"
+
+
+def marketplace_add_spec(entry: dict) -> str | None:
+    """Turn an extraKnownMarketplaces entry into a `marketplace add` argument."""
+    src = entry.get("source") or {}
+    if src.get("source") == "github" and src.get("repo"):
+        return src["repo"]
+    return src.get("url") or src.get("path")
+
+
+def plan_claude_plugins(
+    policy: dict, old_policy: dict
+) -> tuple[list[tuple[str, str, list[str]]], list[str], list[str]]:
+    """Plan the `claude plugin` calls that bring local plugins up to policy.
+
+    `extraKnownMarketplaces` in the merged fragments names marketplaces to
+    register; `enabledPlugins` entries set to true name plugins to install
+    at user scope. Only additions are acted on. A plugin dropped from
+    policy has already had its enabledPlugins entry retracted by the
+    settings merge, and Claude Code treats an installed plugin with no
+    entry as disabled (verified on 2.1.257: it lists as enabled=false), so
+    it is reported rather than uninstalled — uninstalling also deletes the
+    plugin's data directory, which is the user's call.
+
+    Returns (actions, notes, failures); an action is (op, label, argv).
+    """
+    actions: list[tuple[str, str, list[str]]] = []
+    notes: list[str] = []
+    failures: list[str] = []
+
+    want_mkts = dict(policy.get("extraKnownMarketplaces") or {})
+    enabled = policy.get("enabledPlugins") or {}
+    want = {pid for pid, on in enabled.items() if on is True}
+    old_enabled = old_policy.get("enabledPlugins") or {}
+    old_want = {pid for pid, on in old_enabled.items() if on is True}
+    if not want_mkts and not want and not old_want:
+        return actions, notes, failures
+    if not shutil.which("claude"):
+        notes.append("Claude Code plugins: skipped (claude not on PATH)")
+        return actions, notes, failures
+
+    known, err = claude_cli_json("plugin", "marketplace", "list")
+    if err:
+        failures.append(f"plugins: {err}")
+        return actions, notes, failures
+    installed, err = claude_cli_json("plugin", "list")
+    if err:
+        failures.append(f"plugins: {err}")
+        return actions, notes, failures
+    known_names = {m.get("name") for m in known}
+    installed_ids = {p["id"] for p in installed if p.get("scope") == "user"}
+
+    # The official marketplace is implied by any plugin that lives in it.
+    if any(pid.endswith("@" + OFFICIAL_MARKETPLACE) for pid in want):
+        want_mkts.setdefault(OFFICIAL_MARKETPLACE, OFFICIAL_MARKETPLACE_SOURCE)
+
+    for name, entry in want_mkts.items():
+        if name in known_names:
+            continue
+        spec = marketplace_add_spec(entry)
+        if spec is None:
+            failures.append(
+                f"plugins: marketplace {name}: unsupported source {entry!r}")
+            continue
+        actions.append(("add-mkt", name,
+                        ["claude", "plugin", "marketplace", "add", spec]))
+
+    for pid in sorted(want - installed_ids):
+        mkt = pid.rpartition("@")[2] if "@" in pid else ""
+        if mkt and mkt not in known_names and mkt not in want_mkts:
+            failures.append(
+                f"plugins: {pid}: marketplace {mkt!r} is not registered — "
+                f"add it to extraKnownMarketplaces in a fragment")
+            continue
+        actions.append(("install", pid,
+                        ["claude", "plugin", "install", pid, "--scope", "user"]))
+
+    retracted = sorted((old_want - want) & installed_ids)
+    if retracted:
+        notes.append(
+            "plugins dropped from policy (now disabled, still installed; "
+            "`claude plugin uninstall <id>` to remove): " + ", ".join(retracted))
+    unmanaged = sorted(installed_ids - set(enabled) - set(retracted))
+    if unmanaged:
+        notes.append("plugins installed here but in no fragment: "
+                     + ", ".join(unmanaged))
+    return actions, notes, failures
+
+
+def run_plugin_action(argv: list[str]) -> str | None:
+    """Run one planned `claude plugin` call. Returns an error message or None."""
+    try:
+        result = subprocess.run(
+            argv, capture_output=True, text=True, stdin=subprocess.DEVNULL,
+            timeout=600,
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return str(e)
+    if result.returncode == 0:
+        return None
+    lines = (result.stderr.strip() or result.stdout.strip()).splitlines()
+    return " ".join(lines[-2:]) or f"exit {result.returncode}"
+
+
 def migrate_skills_dir(dst: Path, src: Path) -> str | None:
     """Convert a real per-agent skills directory into a symlink to src.
 
@@ -734,6 +879,16 @@ def main() -> int:
         elif manifest.get(mkey):
             settings_notes.append(f"{agent} settings: skipped (not installed)")
 
+    # Plugins follow the merged Claude policy: the settings pass has already
+    # asserted the keys, this plans the CLI calls that make them true.
+    plugin_actions: list[tuple[str, str, list[str]]] = []
+    if claude_ok and applied_policy.get("claude_settings_applied") is not None:
+        plugin_actions, plugin_notes, plugin_failures = plan_claude_plugins(
+            applied_policy["claude_settings_applied"],
+            state.get("claude_settings_applied") or {})
+        settings_notes.extend(plugin_notes)
+        settings_failures.extend(plugin_failures)
+
     desired, skipped = collect_desired(manifest, skills_target, claude_ok, agy_ok)
     taken_dsts = {dst for _, _, dst in desired}
     public_entries, public_warnings = collect_public_skills(skills_target, taken_dsts)
@@ -806,12 +961,15 @@ def main() -> int:
         else:
             actions.append(("link", label, src, dst, ""))
 
-    label_w = max((len(label) for _, label, *_ in actions), default=8)
+    label_w = max(
+        (len(label) for _, label, *_ in actions + plugin_actions), default=8)
     for op, label, src, dst, note in actions:
         srcs = f"{dst} -> {src}" if src else f"{dst}"
-        print(f"  {op:<6} {label:<{label_w}}  {note}  {srcs}".rstrip())
+        print(f"  {op:<7} {label:<{label_w}}  {note}  {srcs}".rstrip())
+    for op, label, argv in plugin_actions:
+        print(f"  {op:<7} {label:<{label_w}}  {' '.join(argv)}")
 
-    if not actions:
+    if not actions and not plugin_actions:
         print("  (nothing to do)")
 
     manifest_skill_srcs = {
@@ -880,6 +1038,20 @@ def main() -> int:
             print(f"ERROR: {msg}", file=sys.stderr)
             failures.append(msg)
             had_error = True
+
+    # Marketplaces come before the plugins that need them (planned in that
+    # order). Each call may clone a repo, so show progress per item.
+    for op, label, argv in plugin_actions:
+        print(f"  {op:<7} {label} ...", end="", flush=True)
+        err = run_plugin_action(argv)
+        if err:
+            print(" FAILED")
+            msg = f"{label}: {' '.join(argv)}: {err}"
+            print(f"ERROR: {msg}", file=sys.stderr)
+            failures.append(msg)
+            had_error = True
+        else:
+            print(" done")
 
     for _, _, _, skey, _ in settings_agents:
         if applied_policy.get(skey) is None:
