@@ -1,0 +1,65 @@
+{
+  "tool": "0.2.0",
+  "schema": 2,
+  "manifest": "old",
+  "dry_run": true,
+  "skills_target": "<CASE>/home/.agents/skills",
+  "claude": true,
+  "agy": false,
+  "desired": 4,
+  "actions": [
+    {
+      "op": "link",
+      "label": "alpha",
+      "src": "<CASE>/root/skills/alpha",
+      "dst": "<CASE>/home/.agents/skills/alpha",
+      "note": ""
+    },
+    {
+      "op": "link",
+      "label": "beta",
+      "src": "<CASE>/root/skills/beta",
+      "dst": "<CASE>/home/.agents/skills/beta",
+      "note": ""
+    },
+    {
+      "op": "link",
+      "label": "CLAUDE.md",
+      "src": "<CASE>/root/claude-code/CLAUDE.md",
+      "dst": "<CASE>/home/.claude/CLAUDE.md",
+      "note": ""
+    },
+    {
+      "op": "link",
+      "label": "claude-skills",
+      "src": "<CASE>/home/.agents/skills",
+      "dst": "<CASE>/home/.claude/skills",
+      "note": ""
+    }
+  ],
+  "plugin_actions": [],
+  "unlinked_repo_skills": [],
+  "messages": [
+    {
+      "level": "note",
+      "text": "manifest 'old': schema 1 -> 2: skill_repos materialized from the built-in defaults (in memory; run --upgrade-manifests to rewrite manifests/)"
+    },
+    {
+      "level": "note",
+      "text": "skill repo <CASE>/home/src/public-skills not found \u2014 clone it, or drop it from the manifest's skill_repos"
+    },
+    {
+      "level": "note",
+      "text": "skill repo <CASE>/home/src/fuchsia-skills not found \u2014 clone it, or drop it from the manifest's skill_repos"
+    },
+    {
+      "level": "skipped",
+      "text": "AGENTS.md: <CASE>/home/.gemini/AGENTS.md (Antigravity not installed)"
+    },
+    {
+      "level": "info",
+      "text": "Claude Code settings: would update <CASE>/home/.claude/settings.json from 1 fragment(s)"
+    }
+  ],
+  "failures": []
+}

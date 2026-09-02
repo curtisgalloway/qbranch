@@ -1,0 +1,29 @@
+{
+  "schema": 2,
+  "name": "stale",
+  "description": "corpus case stale",
+  "skill_repos": [],
+  "skills": [
+    {
+      "name": "alpha",
+      "path": "${QBRANCH_ROOT}/skills/alpha"
+    },
+    {
+      "name": "beta",
+      "path": "${QBRANCH_ROOT}/skills/beta"
+    }
+  ],
+  "links": [
+    {
+      "src": "${QBRANCH_ROOT}/claude-code/CLAUDE.md",
+      "dst": "${HOME}/.claude/CLAUDE.md"
+    },
+    {
+      "src": "${QBRANCH_ROOT}/claude-code/CLAUDE.md",
+      "dst": "${HOME}/.gemini/AGENTS.md"
+    }
+  ],
+  "claude_settings": [
+    "${QBRANCH_ROOT}/claude-code/settings.json"
+  ]
+}

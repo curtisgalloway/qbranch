@@ -1,0 +1,68 @@
+{
+  "tool": "0.2.0",
+  "schema": 2,
+  "manifest": "filter",
+  "dry_run": true,
+  "skills_target": "<CASE>/home/.agents/skills",
+  "claude": true,
+  "agy": false,
+  "desired": 5,
+  "actions": [
+    {
+      "op": "link",
+      "label": "alpha",
+      "src": "<CASE>/root/skills/alpha",
+      "dst": "<CASE>/home/.agents/skills/alpha",
+      "note": ""
+    },
+    {
+      "op": "link",
+      "label": "beta",
+      "src": "<CASE>/root/skills/beta",
+      "dst": "<CASE>/home/.agents/skills/beta",
+      "note": ""
+    },
+    {
+      "op": "link",
+      "label": "CLAUDE.md",
+      "src": "<CASE>/root/claude-code/CLAUDE.md",
+      "dst": "<CASE>/home/.claude/CLAUDE.md",
+      "note": ""
+    },
+    {
+      "op": "link",
+      "label": "claude-skills",
+      "src": "<CASE>/home/.agents/skills",
+      "dst": "<CASE>/home/.claude/skills",
+      "note": ""
+    },
+    {
+      "op": "link",
+      "label": "t-b1",
+      "src": "<CASE>/home/src/mkt-repo/skills/t-b1",
+      "dst": "<CASE>/home/.agents/skills/t-b1",
+      "note": ""
+    }
+  ],
+  "plugin_actions": [],
+  "unlinked_repo_skills": [],
+  "messages": [
+    {
+      "level": "note",
+      "text": "skill repo <CASE>/home/src/absent-repo not found \u2014 clone it, or drop it from the manifest's skill_repos"
+    },
+    {
+      "level": "warning",
+      "text": "mkt-repo: marketplace has no plugin 'nope'"
+    },
+    {
+      "level": "skipped",
+      "text": "AGENTS.md: <CASE>/home/.gemini/AGENTS.md (Antigravity not installed)"
+    },
+    {
+      "level": "info",
+      "text": "Claude Code settings: would update <CASE>/home/.claude/settings.json from 1 fragment(s)"
+    }
+  ],
+  "failures": []
+}

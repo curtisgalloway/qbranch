@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git:*)",
+      "Bash(jq:*)"
+    ]
+  },
+  "enabledPlugins": {
+    "p1@claude-plugins-official": true,
+    "p-old@claude-plugins-official": true,
+    "p-extra@claude-plugins-official": true,
+    "theme-a@mkt-repo": true
+  }
+}

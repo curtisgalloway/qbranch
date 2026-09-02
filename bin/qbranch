@@ -167,7 +167,8 @@ from pathlib import Path
 REPO = Path(os.environ.get("QBRANCH_ROOT")
             or Path(__file__).resolve().parent.parent).expanduser().resolve()
 DEFAULT_SKILLS_TARGET = Path.home() / ".agents" / "skills"
-STATE_FILE_NAME = ".agent-skills-state.json"
+STATE_FILE_NAME = ".qbranch-state.json"
+LEGACY_STATE_FILE_NAME = ".agent-skills-state.json"
 VERSION = "0.2.0"
 # Manifests carry a `schema` (1 when absent). Older schemas are upgraded in
 # memory on every load and rewritten by --upgrade-manifests; a manifest newer
@@ -333,7 +334,7 @@ def migrate_manifest(name: str, m: dict) -> tuple[dict, list[str]]:
     """
     v = m.get("schema", 1)
     if not isinstance(v, int) or v > MANIFEST_SCHEMA:
-        sys.exit(f"manifest {name!r} is schema {v}; sync-agents {VERSION} "
+        sys.exit(f"manifest {name!r} is schema {v}; qbranch {VERSION} "
                  f"understands up to schema {MANIFEST_SCHEMA} — update the tool")
     notes: list[str] = []
     if v < 2:
@@ -351,6 +352,9 @@ def load_manifest(name: str) -> tuple[dict, list[str]]:
 
     Returns (manifest, upgrade_notes); notes are empty for a current one.
     """
+    if not (REPO / "manifests").is_dir():
+        sys.exit(f"no manifests/ under {REPO} — pass --root <config root> "
+                 f"(remembered after the first sync) or set QBRANCH_ROOT")
     p = REPO / "manifests" / f"{name}.json"
     if not p.exists():
         sys.exit(f"manifest not found: {p}\n"
@@ -370,7 +374,7 @@ def upgrade_manifests() -> int:
             continue
         p.write_text(json.dumps(upgraded, indent=2) + "\n")
         print(f"  upgraded    {name}: " + "; ".join(notes))
-    print("\nCommit the rewritten manifests. A sync-agents older than the "
+    print("\nCommit the rewritten manifests. A qbranch older than the "
           "schema they now carry refuses them.")
     return 0
 
@@ -383,9 +387,14 @@ def list_manifests() -> list[str]:
 def load_state(state_path: Path) -> dict:
     """Load sync state, falling back to the legacy ~/.claude/skills location."""
     if not state_path.exists():
-        legacy = CLAUDE_SKILLS_LINK / STATE_FILE_NAME
-        if not CLAUDE_SKILLS_LINK.is_symlink() and legacy.is_file():
-            state_path = legacy
+        candidates = [state_path.parent / LEGACY_STATE_FILE_NAME]
+        if not CLAUDE_SKILLS_LINK.is_symlink():
+            candidates += [CLAUDE_SKILLS_LINK / STATE_FILE_NAME,
+                           CLAUDE_SKILLS_LINK / LEGACY_STATE_FILE_NAME]
+        for legacy in candidates:
+            if legacy.is_file():
+                state_path = legacy
+                break
     if not state_path.exists():
         return {"manifest": None, "links": []}
     try:
@@ -393,7 +402,7 @@ def load_state(state_path: Path) -> dict:
     except json.JSONDecodeError:
         return {"manifest": None, "links": []}
     if data.get("schema", 1) > STATE_SCHEMA:
-        sys.exit(f"{state_path} was written by a newer sync-agents "
+        sys.exit(f"{state_path} was written by a newer qbranch "
                  f"(state schema {data['schema']}, this tool: {STATE_SCHEMA}) "
                  f"— update the tool")
     if "names" in data and "links" not in data:
@@ -403,16 +412,34 @@ def load_state(state_path: Path) -> dict:
     return data
 
 
+def adopt_remembered_root(explicit: bool, state: dict) -> None:
+    """Use the config root the last sync recorded, unless one was given.
+
+    The root is passed once (--root or QBRANCH_ROOT) and remembered in the
+    state file, so a plain `qbranch` afterwards knows where the manifests
+    are even though the tool no longer lives inside the config repo.
+    """
+    if explicit or os.environ.get("QBRANCH_ROOT"):
+        return
+    remembered = state.get("root")
+    if remembered and (Path(remembered) / "manifests").is_dir():
+        globals()["REPO"] = Path(remembered)
+
+
 def save_state(state_path: Path, manifest_name: str, links: list[Path],
                settings_applied: dict[str, dict]) -> None:
     """Write the state file. `settings_applied` maps state key -> policy."""
     state_path.write_text(json.dumps({
         "schema": STATE_SCHEMA,
         "manifest": manifest_name,
+        "root": str(REPO),
         "linked_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "links": sorted({str(p) for p in links}),
         **{k: v or {} for k, v in sorted(settings_applied.items())},
     }, indent=2) + "\n")
+    legacy = state_path.parent / LEGACY_STATE_FILE_NAME
+    if legacy.is_file():
+        legacy.unlink()
 
 
 def collect_desired(
@@ -585,7 +612,7 @@ def offer_claude(failures: list[str]) -> None:
         return
     lines = "\n".join(f"  - {f}" for f in failures)
     prompt = (
-        f"The sync-agents script failed with the following problems:\n"
+        f"The qbranch script failed with the following problems:\n"
         f"{lines}\n"
         f"Please help me fix them."
     )
@@ -1294,7 +1321,7 @@ def audit(
 
 def print_audit(report: dict) -> None:
     b = report["budget"]
-    print(f"manifest: {report['manifest']}   sync-agents {report['tool']}")
+    print(f"manifest: {report['manifest']}   qbranch {report['tool']}")
     print(f"skills linked: {b['skills']}   description text: {b['description_chars']} "
           f"chars (~{b['description_tokens_est']} tok, always loaded)")
     p = report.get("plugins") or {}
@@ -1382,7 +1409,7 @@ def main() -> int:
                     help="With --add-skill/--remove-skill: apply to every manifest "
                          "in manifests/. Prints a reminder to sync each machine afterwards.")
     ap.add_argument("--version", action="version",
-                    version=f"sync-agents {VERSION} (manifest schema "
+                    version=f"qbranch {VERSION} (manifest schema "
                             f"{MANIFEST_SCHEMA})")
     ap.add_argument("--upgrade-manifests", action="store_true",
                     help="Rewrite every manifest under manifests/ at the "
@@ -1427,6 +1454,7 @@ def main() -> int:
     if args.plugin_status or args.manage_plugin or args.audit:
         state_path = Path(args.skills_target).expanduser() / STATE_FILE_NAME
         state = load_state(state_path)
+        adopt_remembered_root(bool(args.root), state)
         manifest_name = args.manifest or state.get("manifest") or "default"
         if args.audit:
             manifest, _ = load_manifest(manifest_name)
@@ -1450,7 +1478,7 @@ def main() -> int:
             for f in fails:
                 print(f"ERROR: {f}", file=sys.stderr)
             if not fails:
-                print("Run sync-agents to apply.")
+                print("Run qbranch to apply.")
             return 1 if fails else 0
         manifest, _ = load_manifest(manifest_name)
         report, fails = plugin_status(manifest_name, manifest, state)
@@ -1507,11 +1535,12 @@ def main() -> int:
                 else:
                     status = "removed" if changed else "not present"
                 print(f"  {status:<15}  {mname}")
-            print(f"\nRemember to run sync-agents on each machine to apply.")
+            print(f"\nRemember to run qbranch on each machine to apply.")
             return 0
         else:
             state_path = Path(args.skills_target).expanduser() / STATE_FILE_NAME
             state = load_state(state_path)
+            adopt_remembered_root(bool(args.root), state)
             manifest_name = args.manifest or state.get("manifest") or "default"
             changed = fn_with_kwargs(manifest_name, skill_name)
             if adding:
@@ -1520,7 +1549,7 @@ def main() -> int:
                 verb, already = "removed from", "not in"
             if changed:
                 print(f"{skill_name!r} {verb} manifest '{manifest_name}'")
-                print(f"Run sync-agents to apply.")
+                print(f"Run qbranch to apply.")
             else:
                 print(f"{skill_name!r} {already} manifest '{manifest_name}'")
             return 0
@@ -1556,6 +1585,7 @@ def main() -> int:
     state_path = skills_target / STATE_FILE_NAME
 
     state = load_state(state_path)
+    adopt_remembered_root(bool(args.root), state)
     manifest_name = args.manifest or state.get("manifest") or "default"
     manifest, upgrade_notes = load_manifest(manifest_name)
     for n in upgrade_notes:

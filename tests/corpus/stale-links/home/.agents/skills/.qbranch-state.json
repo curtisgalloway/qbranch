@@ -1,0 +1,9 @@
+{
+  "schema": 2,
+  "manifest": "stale",
+  "links": [
+    "<CASE>/home/.agents/skills/alpha",
+    "<CASE>/home/.agents/skills/gone",
+    "<CASE>/home/.agents/skills/moved"
+  ]
+}

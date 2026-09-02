@@ -1,0 +1,43 @@
+{
+  "tool": "0.2.0",
+  "schema": 2,
+  "manifest": "bare",
+  "dry_run": true,
+  "skills_target": "<CASE>/home/.agents/skills",
+  "claude": false,
+  "agy": false,
+  "desired": 2,
+  "actions": [
+    {
+      "op": "link",
+      "label": "alpha",
+      "src": "<CASE>/root/skills/alpha",
+      "dst": "<CASE>/home/.agents/skills/alpha",
+      "note": ""
+    },
+    {
+      "op": "link",
+      "label": "beta",
+      "src": "<CASE>/root/skills/beta",
+      "dst": "<CASE>/home/.agents/skills/beta",
+      "note": ""
+    }
+  ],
+  "plugin_actions": [],
+  "unlinked_repo_skills": [],
+  "messages": [
+    {
+      "level": "skipped",
+      "text": "CLAUDE.md: <CASE>/home/.claude/CLAUDE.md (Claude Code not installed)"
+    },
+    {
+      "level": "skipped",
+      "text": "AGENTS.md: <CASE>/home/.gemini/AGENTS.md (Antigravity not installed)"
+    },
+    {
+      "level": "info",
+      "text": "Claude Code settings: skipped (not installed)"
+    }
+  ],
+  "failures": []
+}

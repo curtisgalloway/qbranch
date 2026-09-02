@@ -1,0 +1,30 @@
+{
+  "name": "mkt-repo",
+  "owner": {
+    "name": "corpus"
+  },
+  "plugins": [
+    {
+      "name": "theme-a",
+      "source": "./",
+      "skills": [
+        "./skills/t-a1",
+        "./skills/t-a2"
+      ]
+    },
+    {
+      "name": "theme-b",
+      "source": "./",
+      "skills": [
+        "./skills/t-b1"
+      ]
+    },
+    {
+      "name": "remote",
+      "source": {
+        "source": "github",
+        "repo": "x/y"
+      }
+    }
+  ]
+}

@@ -1,0 +1,46 @@
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Curtis Galloway
+# SPDX-License-Identifier: Apache-2.0
+"""A stand-in for the `claude` CLI, for the qbranch test corpus.
+
+Answers the read-only plugin queries the sync makes from a canned state
+file and records every other invocation, so a corpus case can assert on
+what the tool asked for without a real Claude Code install or network.
+
+State file: $QBRANCH_FAKE_CLAUDE_STATE (JSON), shape:
+  {"marketplaces": [ {"name", "source", "repo"} ... ],
+   "plugins":      [ {"id", "scope", "enabled", "version", "installPath",
+                      "mcpServers": {...}} ... ],
+   "details":      { "<id>": <always-on token count> } }
+Every call is appended, one JSON array per line, to
+$QBRANCH_FAKE_CLAUDE_LOG when that is set.
+"""
+import json
+import os
+import sys
+
+argv = sys.argv[1:]
+state_path = os.environ.get("QBRANCH_FAKE_CLAUDE_STATE")
+state = {}
+if state_path and os.path.isfile(state_path):
+    with open(state_path, encoding="utf-8") as f:
+        state = json.load(f)
+log = os.environ.get("QBRANCH_FAKE_CLAUDE_LOG")
+if log:
+    with open(log, "a", encoding="utf-8") as f:
+        f.write(json.dumps(argv) + "\n")
+
+if argv[:3] == ["plugin", "marketplace", "list"]:
+    print(json.dumps(state.get("marketplaces", [])))
+elif argv[:2] == ["plugin", "list"]:
+    print(json.dumps(state.get("plugins", [])))
+elif argv[:2] == ["plugin", "details"] and len(argv) >= 3:
+    tokens = state.get("details", {}).get(argv[2])
+    if tokens is None:
+        print(f'Plugin "{argv[2]}" not found', file=sys.stderr)
+        sys.exit(1)
+    print(f"{argv[2]}\n\nProjected token cost\n  Always-on:   ~{tokens} tok   added to every session")
+elif argv[:1] == ["--version"]:
+    print("0.0.0 (fake claude for the qbranch corpus)")
+else:
+    print(f"fake claude: recorded {' '.join(argv)}")

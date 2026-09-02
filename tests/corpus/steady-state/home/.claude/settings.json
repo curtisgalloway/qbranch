@@ -1,0 +1,12 @@
+{
+  "theme": "dark",
+  "permissions": {
+    "allow": [
+      "Bash(git:*)",
+      "Bash(jq:*)"
+    ]
+  },
+  "enabledPlugins": {
+    "p1@claude-plugins-official": true
+  }
+}

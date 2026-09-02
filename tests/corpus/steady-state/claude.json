@@ -1,0 +1,18 @@
+{
+  "marketplaces": [
+    {
+      "name": "claude-plugins-official",
+      "source": "github",
+      "repo": "anthropics/claude-plugins-official"
+    }
+  ],
+  "plugins": [
+    {
+      "id": "p1@claude-plugins-official",
+      "scope": "user",
+      "enabled": true,
+      "version": "1.0.0",
+      "installPath": "<CASE>/home/.claude/plugins/cache/p1"
+    }
+  ]
+}

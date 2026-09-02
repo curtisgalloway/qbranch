@@ -1,0 +1,26 @@
+{
+  "schema": 2,
+  "manifest": "steady",
+  "links": [
+    "<CASE>/home/.agents/skills/alpha",
+    "<CASE>/home/.agents/skills/beta",
+    "<CASE>/home/.agents/skills/plain-one",
+    "<CASE>/home/.agents/skills/plain-two",
+    "<CASE>/home/.agents/skills/t-a1",
+    "<CASE>/home/.agents/skills/t-a2",
+    "<CASE>/home/.claude/CLAUDE.md",
+    "<CASE>/home/.claude/skills"
+  ],
+  "claude_settings_applied": {
+    "permissions": {
+      "allow": [
+        "Bash(git:*)",
+        "Bash(jq:*)"
+      ]
+    },
+    "enabledPlugins": {
+      "p1@claude-plugins-official": true
+    }
+  },
+  "agy_settings_applied": {}
+}

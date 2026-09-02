@@ -1,0 +1,81 @@
+{
+  "tool": "0.2.0",
+  "schema": 2,
+  "manifest": "steady",
+  "dry_run": true,
+  "skills_target": "<CASE>/home/.agents/skills",
+  "claude": true,
+  "agy": false,
+  "desired": 8,
+  "actions": [
+    {
+      "op": "ok",
+      "label": "alpha",
+      "src": "<CASE>/root/skills/alpha",
+      "dst": "<CASE>/home/.agents/skills/alpha",
+      "note": ""
+    },
+    {
+      "op": "ok",
+      "label": "beta",
+      "src": "<CASE>/root/skills/beta",
+      "dst": "<CASE>/home/.agents/skills/beta",
+      "note": ""
+    },
+    {
+      "op": "ok",
+      "label": "CLAUDE.md",
+      "src": "<CASE>/root/claude-code/CLAUDE.md",
+      "dst": "<CASE>/home/.claude/CLAUDE.md",
+      "note": ""
+    },
+    {
+      "op": "ok",
+      "label": "claude-skills",
+      "src": "<CASE>/home/.agents/skills",
+      "dst": "<CASE>/home/.claude/skills",
+      "note": ""
+    },
+    {
+      "op": "ok",
+      "label": "plain-one",
+      "src": "<CASE>/home/src/plain-repo/skills/plain-one",
+      "dst": "<CASE>/home/.agents/skills/plain-one",
+      "note": ""
+    },
+    {
+      "op": "ok",
+      "label": "plain-two",
+      "src": "<CASE>/home/src/plain-repo/skills/plain-two",
+      "dst": "<CASE>/home/.agents/skills/plain-two",
+      "note": ""
+    },
+    {
+      "op": "ok",
+      "label": "t-a1",
+      "src": "<CASE>/home/src/mkt-repo/skills/t-a1",
+      "dst": "<CASE>/home/.agents/skills/t-a1",
+      "note": ""
+    },
+    {
+      "op": "ok",
+      "label": "t-a2",
+      "src": "<CASE>/home/src/mkt-repo/skills/t-a2",
+      "dst": "<CASE>/home/.agents/skills/t-a2",
+      "note": ""
+    }
+  ],
+  "plugin_actions": [],
+  "unlinked_repo_skills": [],
+  "messages": [
+    {
+      "level": "skipped",
+      "text": "AGENTS.md: <CASE>/home/.gemini/AGENTS.md (Antigravity not installed)"
+    },
+    {
+      "level": "info",
+      "text": "Claude Code settings: <CASE>/home/.claude/settings.json up to date (1 fragment(s))"
+    }
+  ],
+  "failures": []
+}

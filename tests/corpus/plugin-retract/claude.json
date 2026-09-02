@@ -1,0 +1,46 @@
+{
+  "marketplaces": [
+    {
+      "name": "claude-plugins-official",
+      "source": "github",
+      "repo": "anthropics/claude-plugins-official"
+    },
+    {
+      "name": "mkt-repo",
+      "source": "directory",
+      "path": "<CASE>/home/src/mkt-repo"
+    }
+  ],
+  "plugins": [
+    {
+      "id": "p1@claude-plugins-official",
+      "scope": "user",
+      "enabled": true,
+      "version": "1"
+    },
+    {
+      "id": "p-old@claude-plugins-official",
+      "scope": "user",
+      "enabled": true,
+      "version": "1"
+    },
+    {
+      "id": "p-extra@claude-plugins-official",
+      "scope": "user",
+      "enabled": true,
+      "version": "1"
+    },
+    {
+      "id": "theme-a@mkt-repo",
+      "scope": "user",
+      "enabled": true,
+      "version": "1"
+    },
+    {
+      "id": "proj@claude-plugins-official",
+      "scope": "project",
+      "enabled": true,
+      "version": "1"
+    }
+  ]
+}

@@ -1,0 +1,1 @@
+../../root/claude-code/CLAUDE.md

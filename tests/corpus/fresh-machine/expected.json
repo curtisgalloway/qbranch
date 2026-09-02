@@ -1,0 +1,128 @@
+{
+  "tool": "0.2.0",
+  "schema": 2,
+  "manifest": "fresh",
+  "dry_run": true,
+  "skills_target": "<CASE>/home/.agents/skills",
+  "claude": true,
+  "agy": false,
+  "desired": 8,
+  "actions": [
+    {
+      "op": "link",
+      "label": "alpha",
+      "src": "<CASE>/root/skills/alpha",
+      "dst": "<CASE>/home/.agents/skills/alpha",
+      "note": ""
+    },
+    {
+      "op": "link",
+      "label": "beta",
+      "src": "<CASE>/root/skills/beta",
+      "dst": "<CASE>/home/.agents/skills/beta",
+      "note": ""
+    },
+    {
+      "op": "link",
+      "label": "CLAUDE.md",
+      "src": "<CASE>/root/claude-code/CLAUDE.md",
+      "dst": "<CASE>/home/.claude/CLAUDE.md",
+      "note": ""
+    },
+    {
+      "op": "link",
+      "label": "claude-skills",
+      "src": "<CASE>/home/.agents/skills",
+      "dst": "<CASE>/home/.claude/skills",
+      "note": ""
+    },
+    {
+      "op": "link",
+      "label": "plain-one",
+      "src": "<CASE>/home/src/plain-repo/skills/plain-one",
+      "dst": "<CASE>/home/.agents/skills/plain-one",
+      "note": ""
+    },
+    {
+      "op": "link",
+      "label": "plain-two",
+      "src": "<CASE>/home/src/plain-repo/skills/plain-two",
+      "dst": "<CASE>/home/.agents/skills/plain-two",
+      "note": ""
+    },
+    {
+      "op": "link",
+      "label": "t-a1",
+      "src": "<CASE>/home/src/mkt-repo/skills/t-a1",
+      "dst": "<CASE>/home/.agents/skills/t-a1",
+      "note": ""
+    },
+    {
+      "op": "link",
+      "label": "t-a2",
+      "src": "<CASE>/home/src/mkt-repo/skills/t-a2",
+      "dst": "<CASE>/home/.agents/skills/t-a2",
+      "note": ""
+    }
+  ],
+  "plugin_actions": [
+    {
+      "op": "add-mkt",
+      "label": "mkt1",
+      "argv": [
+        "claude",
+        "plugin",
+        "marketplace",
+        "add",
+        "example/mkt1"
+      ]
+    },
+    {
+      "op": "add-mkt",
+      "label": "claude-plugins-official",
+      "argv": [
+        "claude",
+        "plugin",
+        "marketplace",
+        "add",
+        "anthropics/claude-plugins-official"
+      ]
+    },
+    {
+      "op": "install",
+      "label": "p1@claude-plugins-official",
+      "argv": [
+        "claude",
+        "plugin",
+        "install",
+        "p1@claude-plugins-official",
+        "--scope",
+        "user"
+      ]
+    },
+    {
+      "op": "install",
+      "label": "q@mkt1",
+      "argv": [
+        "claude",
+        "plugin",
+        "install",
+        "q@mkt1",
+        "--scope",
+        "user"
+      ]
+    }
+  ],
+  "unlinked_repo_skills": [],
+  "messages": [
+    {
+      "level": "skipped",
+      "text": "AGENTS.md: <CASE>/home/.gemini/AGENTS.md (Antigravity not installed)"
+    },
+    {
+      "level": "info",
+      "text": "Claude Code settings: would update <CASE>/home/.claude/settings.json from 1 fragment(s)"
+    }
+  ],
+  "failures": []
+}

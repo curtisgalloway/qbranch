@@ -1,0 +1,5 @@
+{
+  "manifest": "future",
+  "rc": 1,
+  "stderr_contains": "understands up to schema"
+}
