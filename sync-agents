@@ -85,8 +85,10 @@ added via `claude plugin marketplace add` / `claude plugin install`. An
 installed plugin with no enabledPlugins entry is disabled as far as Claude
 Code is concerned, so a plugin dropped from the fragments is disabled by
 the ordinary settings retraction and reported — never uninstalled, since
-that would delete its data directory. Plugins installed locally but absent
-from every fragment are reported, like skills missing from the manifest.
+that would delete its data directory. A plugin is *managed* when a fragment
+declares it (true or false) and *unmanaged* when it is installed locally but
+declared nowhere; unmanaged plugins are reported, like skills missing from
+the manifest, and otherwise left alone.
 
 `agy_settings` is the same thing for Antigravity, targeting the app-owned
 ~/.gemini/antigravity-cli/settings.json. That file mixes policy (the
@@ -115,6 +117,10 @@ The script:
     stale symlinks even when they pointed at paths outside this repo.
   - Registers the marketplaces and installs the plugins the merged
     claude_settings policy declares, via the `claude plugin` CLI.
+  - `--plugin-status [--json]` classifies this machine's plugins as
+    managed / unmanaged / no longer managed; `--manage-plugin ID --in
+    base|host [--value false]` declares one in a fragment. The
+    review-plugins skill drives these two to triage unmanaged plugins.
 """
 
 from __future__ import annotations
@@ -525,6 +531,22 @@ def retract_settings(live: dict, old: dict, new: dict) -> None:
             del live[k]
 
 
+def load_fragments(raw_paths: list[str]) -> tuple[list[tuple[Path, dict]], list[str]]:
+    """Read settings fragments in manifest order. Returns (loaded, failures)."""
+    loaded: list[tuple[Path, dict]] = []
+    failures: list[str] = []
+    for raw in raw_paths:
+        p = expand_path(raw)
+        if not p.is_file():
+            failures.append(f"settings fragment missing: {p}")
+            continue
+        try:
+            loaded.append((p, json.loads(p.read_text())))
+        except json.JSONDecodeError as e:
+            failures.append(f"settings fragment unparseable: {p}: {e}")
+    return loaded, failures
+
+
 def sync_settings(
     agent: str, manifest_key: str, target: Path, state_key: str,
     manifest: dict, state: dict, dry_run: bool
@@ -544,17 +566,12 @@ def sync_settings(
     fragments = manifest.get(manifest_key, [])
     old_applied = state.get(state_key) or {}
 
+    loaded, load_failures = load_fragments(fragments)
+    if load_failures:
+        failures.extend(load_failures)
+        return notes, None, failures
     policy: dict = {}
-    for raw in fragments:
-        p = expand_path(raw)
-        if not p.is_file():
-            failures.append(f"settings fragment missing: {p}")
-            return notes, None, failures
-        try:
-            frag = json.loads(p.read_text())
-        except json.JSONDecodeError as e:
-            failures.append(f"settings fragment unparseable: {p}: {e}")
-            return notes, None, failures
+    for _, frag in loaded:
         policy = merge_fragments(policy, frag)
 
     if not fragments and not old_applied:
@@ -691,13 +708,196 @@ def plan_claude_plugins(
     retracted = sorted((old_want - want) & installed_ids)
     if retracted:
         notes.append(
-            "plugins dropped from policy (now disabled, still installed; "
-            "`claude plugin uninstall <id>` to remove): " + ", ".join(retracted))
+            "plugins no longer managed (dropped from the fragments; now "
+            "disabled, still installed; `claude plugin uninstall <id>` to "
+            "remove): " + ", ".join(retracted))
     unmanaged = sorted(installed_ids - set(enabled) - set(retracted))
     if unmanaged:
-        notes.append("plugins installed here but in no fragment: "
-                     + ", ".join(unmanaged))
+        notes.append("unmanaged plugins (installed here, declared in no "
+                     "fragment): " + ", ".join(unmanaged))
     return actions, notes, failures
+
+
+def plugin_marketplace_of(pid: str) -> str:
+    return pid.rpartition("@")[2] if "@" in pid else ""
+
+
+def host_fragment_of(fragments: list[str]) -> str | None:
+    """The manifest's per-host fragment entry (raw, unexpanded), if any."""
+    return next((r for r in fragments if "/settings/hosts/" in r), None)
+
+
+def marketplace_entry_from_cli(m: dict | None) -> dict | None:
+    """Rebuild an extraKnownMarketplaces entry from a `marketplace list` row."""
+    if not m or not m.get("source"):
+        return None
+    src = {"source": m["source"]}
+    for k in ("repo", "url", "path"):
+        if m.get(k):
+            src[k] = m[k]
+    return {"source": src}
+
+
+def plugin_status(
+    manifest_name: str, manifest: dict, state: dict
+) -> tuple[dict, list[str]]:
+    """Classify this machine's user-scope plugins against the manifest.
+
+    managed:   declared (true or false) by some fragment of the manifest
+    unmanaged: installed here, declared nowhere
+    dropped:   declared at the last sync, not any more, still installed
+
+    Returns (report, failures). The report is what --plugin-status prints
+    and what the review-plugins skill consumes.
+    """
+    fragments = manifest.get("claude_settings", [])
+    report: dict = {
+        "manifest": manifest_name,
+        "base_fragment": str(expand_path(fragments[0])) if fragments else None,
+        "host_fragment": None,
+        "managed": {},
+        "unmanaged": [],
+        "dropped": [],
+    }
+    host_raw = host_fragment_of(fragments)
+    if host_raw:
+        report["host_fragment"] = str(expand_path(host_raw))
+    loaded, failures = load_fragments(fragments)
+    if failures:
+        return report, failures
+
+    declared: dict[str, dict] = {}
+    declared_mkts: set[str] = {OFFICIAL_MARKETPLACE}
+    for p, frag in loaded:
+        for pid, val in (frag.get("enabledPlugins") or {}).items():
+            declared[pid] = {"value": val, "fragment": str(p)}
+        declared_mkts.update((frag.get("extraKnownMarketplaces") or {}).keys())
+
+    if not shutil.which("claude"):
+        return report, ["claude not on PATH — cannot read installed plugins"]
+    known, err = claude_cli_json("plugin", "marketplace", "list")
+    if err:
+        return report, [err]
+    installed, err = claude_cli_json("plugin", "list")
+    if err:
+        return report, [err]
+    mkt_by_name = {m.get("name"): m for m in known}
+    live = {p["id"]: p for p in installed if p.get("scope") == "user"}
+    old_policy = state.get("claude_settings_applied") or {}
+    old_want = {pid for pid, on in (old_policy.get("enabledPlugins") or {}).items()
+                if on is True}
+
+    for pid, info in declared.items():
+        row = live.get(pid)
+        report["managed"][pid] = {
+            **info,
+            "installed": row is not None,
+            "enabled": bool(row and row.get("enabled")),
+        }
+    for pid, row in sorted(live.items()):
+        if pid in declared:
+            continue
+        mkt = plugin_marketplace_of(pid)
+        entry = {
+            "id": pid,
+            "version": row.get("version"),
+            "enabled": bool(row.get("enabled")),
+            "marketplace": mkt,
+            "marketplace_declared": mkt in declared_mkts,
+            "marketplace_source": marketplace_entry_from_cli(mkt_by_name.get(mkt)),
+        }
+        report["dropped" if pid in old_want else "unmanaged"].append(entry)
+    return report, []
+
+
+def print_plugin_status(report: dict) -> None:
+    print(f"manifest: {report['manifest']}")
+    print(f"base fragment: {report['base_fragment']}")
+    host = report["host_fragment"]
+    print(f"host fragment: {host or '(none — --manage-plugin --in host creates one)'}")
+    managed = report["managed"]
+    print(f"\nmanaged ({len(managed)}):")
+    for pid, info in sorted(managed.items()):
+        state = "installed" if info["installed"] else "NOT INSTALLED"
+        on = "enabled" if info["enabled"] else "disabled"
+        print(f"  {pid:<48} {json.dumps(info['value']):<6} {state}, {on}"
+              f"  [{Path(info['fragment']).name}]")
+    for key, title in (("unmanaged", "unmanaged (installed here, declared in no fragment)"),
+                       ("dropped", "no longer managed (dropped from the fragments, still installed)")):
+        rows = report[key]
+        print(f"\n{title} ({len(rows)}):")
+        for e in rows:
+            on = "enabled" if e["enabled"] else "disabled"
+            mkt = e["marketplace"] + ("" if e["marketplace_declared"] else " (marketplace undeclared)")
+            print(f"  {e['id']:<48} v{e['version']}  {on}  {mkt}")
+
+
+def manage_plugin(
+    manifest_name: str, pid: str, where: str, value: bool
+) -> tuple[list[str], list[str]]:
+    """Declare pid in the manifest's base or host fragment.
+
+    `where` is "base" (first fragment — every machine using it) or "host"
+    (the manifest's hosts/ fragment, created and wired into the manifest if
+    missing). A true value for a plugin from a non-official marketplace
+    also declares that marketplace, so other machines can install it.
+    Returns (notes, failures).
+    """
+    notes: list[str] = []
+    failures: list[str] = []
+    mpath = REPO / "manifests" / f"{manifest_name}.json"
+    if not mpath.is_file():
+        return notes, [f"manifest not found: {mpath}"]
+    manifest = json.loads(mpath.read_text())
+    fragments = list(manifest.get("claude_settings", []))
+    if not fragments:
+        return notes, [f"manifest {manifest_name} lists no claude_settings fragments"]
+
+    if where == "base":
+        raw = fragments[0]
+    else:
+        raw = host_fragment_of(fragments)
+        if raw is None:
+            raw = f"${{AGENT_SKILLS_REPO}}/claude-code/settings/hosts/{manifest_name}.json"
+            fragments.append(raw)
+            manifest["claude_settings"] = fragments
+            mpath.write_text(json.dumps(manifest, indent=2) + "\n")
+            notes.append(f"added {raw} to manifest {manifest_name}")
+    fpath = expand_path(raw)
+    frag = json.loads(fpath.read_text()) if fpath.is_file() else {}
+    others, load_failures = load_fragments([r for r in fragments if r != raw])
+    failures.extend(load_failures)
+
+    for p, other in others:
+        if pid in (other.get("enabledPlugins") or {}):
+            notes.append(f"note: {pid} is also declared in {p} as "
+                         f"{json.dumps(other['enabledPlugins'][pid])}; "
+                         f"later fragments win")
+
+    frag.setdefault("enabledPlugins", {})[pid] = value
+    mkt = plugin_marketplace_of(pid)
+    if value and mkt and mkt != OFFICIAL_MARKETPLACE:
+        declared = mkt in (frag.get("extraKnownMarketplaces") or {}) or any(
+            mkt in (other.get("extraKnownMarketplaces") or {}) for _, other in others)
+        if not declared:
+            known, err = ([], "claude not on PATH")
+            if shutil.which("claude"):
+                known, err = claude_cli_json("plugin", "marketplace", "list")
+            row = next((m for m in (known or []) if m.get("name") == mkt), None)
+            entry = marketplace_entry_from_cli(row)
+            if entry:
+                frag.setdefault("extraKnownMarketplaces", {})[mkt] = entry
+                notes.append(f"declared marketplace {mkt} in {fpath.name}")
+            else:
+                failures.append(
+                    f"marketplace {mkt} is not registered here"
+                    f"{' (' + err + ')' if err else ''}; add it to "
+                    f"extraKnownMarketplaces in {fpath} by hand")
+
+    fpath.parent.mkdir(parents=True, exist_ok=True)
+    fpath.write_text(json.dumps(frag, indent=2) + "\n")
+    notes.append(f"{pid} = {json.dumps(value)} in {fpath}")
+    return notes, failures
 
 
 def run_plugin_action(argv: list[str]) -> str | None:
@@ -766,12 +966,57 @@ def main() -> int:
     ap.add_argument("--all", dest="all_manifests", action="store_true",
                     help="With --add-skill/--remove-skill: apply to every manifest "
                          "in manifests/. Prints a reminder to sync each machine afterwards.")
+    ap.add_argument("--plugin-status", action="store_true",
+                    help="Report this machine's Claude Code plugins as managed / "
+                         "unmanaged / no longer managed against the target "
+                         "manifest, and exit.")
+    ap.add_argument("--json", action="store_true",
+                    help="With --plugin-status: machine-readable output.")
+    ap.add_argument("--manage-plugin", metavar="ID",
+                    help="Declare plugin ID (name@marketplace) in a fragment of "
+                         "the target manifest and exit. Needs --in; see --value.")
+    ap.add_argument("--in", dest="fragment_kind", choices=["base", "host"],
+                    help="With --manage-plugin: 'base' is the shared first "
+                         "fragment (every machine using it); 'host' is this "
+                         "manifest's hosts/ fragment, created and wired into the "
+                         "manifest if missing.")
+    ap.add_argument("--value", choices=["true", "false"], default="true",
+                    help="With --manage-plugin: true installs and enables the "
+                         "plugin wherever the fragment applies; false pins it "
+                         "disabled there. Default: true.")
     args = ap.parse_args()
 
     if args.list:
         for n in list_manifests():
             print(n)
         return 0
+
+    if args.plugin_status or args.manage_plugin:
+        state_path = Path(args.skills_target).expanduser() / STATE_FILE_NAME
+        state = load_state(state_path)
+        manifest_name = args.manifest or state.get("manifest") or "default"
+        if args.manage_plugin:
+            if not args.fragment_kind:
+                sys.exit("--manage-plugin needs --in base|host")
+            notes, fails = manage_plugin(
+                manifest_name, args.manage_plugin, args.fragment_kind,
+                args.value == "true")
+            for n in notes:
+                print(n)
+            for f in fails:
+                print(f"ERROR: {f}", file=sys.stderr)
+            if not fails:
+                print("Run sync-agents to apply.")
+            return 1 if fails else 0
+        manifest = load_manifest(manifest_name)
+        report, fails = plugin_status(manifest_name, manifest, state)
+        if args.json:
+            print(json.dumps({**report, "errors": fails}, indent=2))
+        else:
+            print_plugin_status(report)
+            for f in fails:
+                print(f"ERROR: {f}", file=sys.stderr)
+        return 1 if fails else 0
 
     if args.add_skill and args.remove_skill:
         sys.exit("--add-skill and --remove-skill are mutually exclusive")
