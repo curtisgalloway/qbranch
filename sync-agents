@@ -5,10 +5,12 @@
 
 The sync has three parts:
 
-  1. Generic (always): every `skills` entry — plus auto-discovered skills
-     from the public skill repos (~/src/public-skills, ~/src/fuchsia-skills)
-     — is symlinked into the agent-neutral
-     skills directory ~/.agents/skills/ (override with --skills-target).
+  1. Generic (always): every `skills` entry — plus the skills discovered in
+     each `skill_repos` checkout (a repo with a Claude Code
+     .claude-plugin/marketplace.json is read plugin by plugin, optionally
+     filtered to named plugins; otherwise its skills/ dir) — is symlinked
+     into the agent-neutral skills directory ~/.agents/skills/ (override
+     with --skills-target).
      `links` entries whose destination is outside a per-agent directory
      are also applied here.
 
@@ -38,6 +40,11 @@ A manifest is a JSON file at manifests/<name>.json with this shape:
     {
       "name": "ozone",
       "description": "...",
+      "schema": 2,
+      "skill_repos": [
+        { "path": "${HOME}/src/public-skills" },
+        { "path": "${HOME}/src/fuchsia-skills", "plugins": ["fuchsia-skills"] }
+      ],
       "skills": [
         { "name": "learn", "path": "${AGENT_SKILLS_REPO}/skills/learn" },
         { "name": "paniolo", "repo": "git@github.com:user/paniolo.git",
@@ -64,6 +71,19 @@ A manifest is a JSON file at manifests/<name>.json with this shape:
 the entry's name". `links` is the general form: any source linked to any
 destination — agent harness state (hooks, instruction files) or anything
 else.
+
+`skill_repos` lists checkouts whose skills are linked without per-skill
+manifest entries. A repo with a Claude Code marketplace
+(.claude-plugin/marketplace.json) contributes the skills each plugin entry
+lists, so `"plugins": [...]` picks themes; a plain repo contributes
+skills/*/SKILL.md. Manifest `skills` win on a name collision, then earlier
+repos over later ones.
+
+Manifests carry `"schema": N` (1 when absent). An older manifest is
+upgraded in memory on every load and rewritten by --upgrade-manifests; a
+newer one is refused with a pointer to update the tool. Forward-only, by
+design, so a manifest never has to be edited by hand to keep working with
+a newer tool.
 
 `claude_settings` lists git-tracked policy fragments (shared base first,
 host fragment after) that are merged in order — dicts recurse, lists union,
@@ -128,6 +148,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -138,13 +159,15 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 DEFAULT_SKILLS_TARGET = Path.home() / ".agents" / "skills"
 STATE_FILE_NAME = ".agent-skills-state.json"
-# Public skill repos whose skills/ dirs are auto-discovered, in order. A name
-# defined by the manifest wins over any of these; an earlier repo wins over a
-# later one on a name collision between repos.
-PUBLIC_SKILL_REPOS = [
-    Path.home() / "src" / "public-skills",
-    Path.home() / "src" / "fuchsia-skills",
-]
+VERSION = "0.2.0"
+# Manifests carry a `schema` (1 when absent). Older schemas are upgraded in
+# memory on every load and rewritten by --upgrade-manifests; a manifest newer
+# than MANIFEST_SCHEMA is refused, so the upgrade path is forward-only.
+MANIFEST_SCHEMA = 2
+STATE_SCHEMA = 2
+# Skill repos a schema-1 manifest discovered implicitly. Schema 2 lists them
+# under `skill_repos`; the 1 -> 2 migration materializes exactly these.
+DEFAULT_SKILL_REPOS = ["${HOME}/src/public-skills", "${HOME}/src/fuchsia-skills"]
 SKILL_REPOS_CACHE = Path.home() / ".agents" / "skill-repos"
 LEGACY_SKILL_REPOS_CACHE = Path.home() / ".claude" / "skill-repos"
 # Claude Code relocates its whole config dir via CLAUDE_CONFIG_DIR; honor it
@@ -152,6 +175,10 @@ LEGACY_SKILL_REPOS_CACHE = Path.home() / ".claude" / "skill-repos"
 CLAUDE_DIR = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
 CLAUDE_SKILLS_LINK = CLAUDE_DIR / "skills"
 CLAUDE_SETTINGS_FILE = CLAUDE_DIR / "settings.json"
+# User-scope MCP servers live in the app-owned ~/.claude.json, which moves
+# into the config dir when CLAUDE_CONFIG_DIR is set. Read-only here.
+CLAUDE_JSON_FILE = (CLAUDE_DIR / ".claude.json" if os.environ.get("CLAUDE_CONFIG_DIR")
+                    else Path.home() / ".claude.json")
 # Antigravity keeps its harness state under ~/.gemini: instruction files at
 # the top level, CLI-specific state (skills, settings) one level down.
 AGY_DIR = Path.home() / ".gemini"
@@ -287,12 +314,55 @@ def parse_git_skill_url(arg: str) -> tuple[str, str, str]:
     return skill_name, repo_url, skill_path
 
 
-def load_manifest(name: str) -> dict:
+def migrate_manifest(name: str, m: dict) -> tuple[dict, list[str]]:
+    """Upgrade a manifest dict to MANIFEST_SCHEMA in memory.
+
+    Returns (manifest, notes) where notes describe each step taken. Exits
+    on a manifest newer than this tool understands: the upgrade path is
+    forward-only, so the fix is a newer tool, never a hand-edited manifest.
+    """
+    v = m.get("schema", 1)
+    if not isinstance(v, int) or v > MANIFEST_SCHEMA:
+        sys.exit(f"manifest {name!r} is schema {v}; sync-agents {VERSION} "
+                 f"understands up to schema {MANIFEST_SCHEMA} — update the tool")
+    notes: list[str] = []
+    if v < 2:
+        m.setdefault("skill_repos", [{"path": p} for p in DEFAULT_SKILL_REPOS])
+        notes.append("schema 1 -> 2: skill_repos materialized from the "
+                     "built-in defaults")
+    if notes:
+        m = {"schema": MANIFEST_SCHEMA,
+             **{k: val for k, val in m.items() if k != "schema"}}
+    return m, notes
+
+
+def load_manifest(name: str) -> tuple[dict, list[str]]:
+    """Load manifests/<name>.json upgraded to the current schema.
+
+    Returns (manifest, upgrade_notes); notes are empty for a current one.
+    """
     p = REPO / "manifests" / f"{name}.json"
     if not p.exists():
         sys.exit(f"manifest not found: {p}\n"
                  f"available: {', '.join(list_manifests()) or '(none)'}")
-    return json.loads(p.read_text())
+    return migrate_manifest(name, json.loads(p.read_text()))
+
+
+def upgrade_manifests() -> int:
+    """Rewrite every manifest at MANIFEST_SCHEMA. Never downgrades."""
+    for name in list_manifests():
+        p = REPO / "manifests" / f"{name}.json"
+        raw = json.loads(p.read_text())
+        before = json.dumps(raw, sort_keys=True)
+        upgraded, notes = migrate_manifest(name, raw)
+        if json.dumps(upgraded, sort_keys=True) == before:
+            print(f"  up to date  {name} (schema {upgraded.get('schema', 1)})")
+            continue
+        p.write_text(json.dumps(upgraded, indent=2) + "\n")
+        print(f"  upgraded    {name}: " + "; ".join(notes))
+    print("\nCommit the rewritten manifests. A sync-agents older than the "
+          "schema they now carry refuses them.")
+    return 0
 
 
 def list_manifests() -> list[str]:
@@ -312,6 +382,10 @@ def load_state(state_path: Path) -> dict:
         data = json.loads(state_path.read_text())
     except json.JSONDecodeError:
         return {"manifest": None, "links": []}
+    if data.get("schema", 1) > STATE_SCHEMA:
+        sys.exit(f"{state_path} was written by a newer sync-agents "
+                 f"(state schema {data['schema']}, this tool: {STATE_SCHEMA}) "
+                 f"— update the tool")
     if "names" in data and "links" not in data:
         skills_target = state_path.parent
         data["links"] = [str(skills_target / n) for n in data["names"]]
@@ -323,6 +397,7 @@ def save_state(state_path: Path, manifest_name: str, links: list[Path],
                settings_applied: dict[str, dict]) -> None:
     """Write the state file. `settings_applied` maps state key -> policy."""
     state_path.write_text(json.dumps({
+        "schema": STATE_SCHEMA,
         "manifest": manifest_name,
         "linked_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "links": sorted({str(p) for p in links}),
@@ -373,35 +448,123 @@ def collect_desired(
     return out, skipped
 
 
-def collect_public_skills(
-    skills_target: Path, taken_dsts: set[Path]
-) -> tuple[list[tuple[str, Path, Path]], list[str]]:
-    """Implicit skill entries from every repo in PUBLIC_SKILL_REPOS.
+def scan_skill_dirs(d: Path) -> list[Path]:
+    """Immediate subdirectories of d that hold a SKILL.md, sorted."""
+    if not d.is_dir():
+        return []
+    return [c for c in sorted(d.iterdir())
+            if c.is_dir() and (c / "SKILL.md").is_file()]
 
-    Returns (entries, warnings). Manifest entries win on name collision, as
-    does an earlier repo over a later one; the losing entry is skipped and
-    surfaced in `warnings`.
+
+def read_marketplace(repo: Path) -> dict | None:
+    p = repo / ".claude-plugin" / "marketplace.json"
+    if not p.is_file():
+        return None
+    try:
+        return json.loads(p.read_text())
+    except json.JSONDecodeError as e:
+        print(f"warning: {p}: {e} — treating {repo.name} as a plain skill repo")
+        return None
+
+
+def repo_skill_dirs(
+    repo: Path, only_plugins: list[str] | None
+) -> tuple[list[tuple[Path, str]], str, list[str]]:
+    """The skill directories a checkout offers, as (dir, plugin_name) pairs.
+
+    A repo with .claude-plugin/marketplace.json is read the way Claude Code
+    reads it: each plugin entry with a relative source contributes the
+    skills paths it lists (a listed directory of skills is scanned, a listed
+    skill is taken as-is) or, listing none, its whole skills/ folder.
+    `only_plugins` narrows that to named entries. A repo without a
+    marketplace contributes skills/*/SKILL.md. Also returns the marketplace
+    name ("" for a plain repo) and warnings.
+    """
+    warnings: list[str] = []
+    mkt = read_marketplace(repo)
+    if mkt is None:
+        if only_plugins:
+            warnings.append(f"{repo.name}: no marketplace.json, so the "
+                            f"'plugins' filter {only_plugins} is ignored")
+        return [(d, "") for d in scan_skill_dirs(repo / "skills")], "", warnings
+
+    entries = [e for e in (mkt.get("plugins") or []) if isinstance(e, dict)]
+    if only_plugins:
+        names = {e.get("name") for e in entries}
+        for want in only_plugins:
+            if want not in names:
+                warnings.append(f"{repo.name}: marketplace has no plugin {want!r}")
+        entries = [e for e in entries if e.get("name") in only_plugins]
+
+    out: list[tuple[Path, str]] = []
+    seen: set[Path] = set()
+    for e in entries:
+        src = e.get("source")
+        if not isinstance(src, str) or not src.startswith("./"):
+            continue  # a remote plugin source is not part of this checkout
+        root = (repo / src).resolve()
+        listed = e.get("skills")
+        if listed:
+            candidates: list[Path] = []
+            for s in listed:
+                d = (root / s).resolve()
+                if (d / "SKILL.md").is_file():
+                    candidates.append(d)
+                elif d.is_dir():
+                    candidates.extend(scan_skill_dirs(d))
+                else:
+                    warnings.append(f"{repo.name}/{e.get('name')}: listed "
+                                    f"skill path missing: {d}")
+        else:
+            candidates = scan_skill_dirs(root / "skills")
+        for d in candidates:
+            if d in seen:
+                continue
+            seen.add(d)
+            out.append((d, e.get("name") or ""))
+    return out, mkt.get("name") or repo.name, warnings
+
+
+def collect_repo_skills(
+    manifest: dict, skills_target: Path, taken_dsts: set[Path]
+) -> tuple[list[tuple[str, Path, Path]], list[str], list[Path],
+           set[tuple[str, str]], dict[Path, str]]:
+    """Implicit skill entries from every `skill_repos` checkout.
+
+    Returns (entries, warnings, missing_repos, discovered, origins).
+    `discovered` holds (marketplace, plugin) pairs whose skills were taken
+    from a checkout — the plugin-install path would load those twice.
+    `origins` maps each dst to "<repo>" or "<repo>:<plugin>" for audits.
+    Manifest entries win on a name collision, then an earlier repo over a
+    later one; the loser is skipped and surfaced in `warnings`.
     """
     entries: list[tuple[str, Path, Path]] = []
     warnings: list[str] = []
+    missing: list[Path] = []
+    discovered: set[tuple[str, str]] = set()
+    origins: dict[Path, str] = {}
     claimed = set(taken_dsts)
-    for repo in PUBLIC_SKILL_REPOS:
-        skills_dir = repo / "skills"
-        if not skills_dir.is_dir():
+    for spec in manifest.get("skill_repos", []):
+        if isinstance(spec, str):
+            spec = {"path": spec}
+        repo = expand_path(spec["path"])
+        if not repo.is_dir():
+            missing.append(repo)
             continue
-        for child in sorted(skills_dir.iterdir()):
-            if not child.is_dir() or not (child / "SKILL.md").exists():
-                continue
-            name = child.name
-            dst = skills_target / name
+        dirs, mkt_name, w = repo_skill_dirs(repo, spec.get("plugins"))
+        warnings.extend(w)
+        for d, plugin in dirs:
+            if mkt_name and plugin:
+                discovered.add((mkt_name, plugin))
+            dst = skills_target / d.name
             if dst in claimed:
-                warnings.append(
-                    f"{repo.name}/{name}: already defined at {dst}, skipped"
-                )
+                warnings.append(f"{repo.name}/{d.name}: already defined at "
+                                f"{dst}, skipped")
                 continue
             claimed.add(dst)
-            entries.append((name, child, dst))
-    return entries, warnings
+            entries.append((d.name, d, dst))
+            origins[dst] = f"{repo.name}:{plugin}" if plugin else repo.name
+    return entries, warnings, missing, discovered, origins
 
 
 def offer_claude(failures: list[str]) -> None:
@@ -639,7 +802,8 @@ def marketplace_add_spec(entry: dict) -> str | None:
 
 
 def plan_claude_plugins(
-    policy: dict, old_policy: dict
+    policy: dict, old_policy: dict,
+    discovered: set[tuple[str, str]] = frozenset(),
 ) -> tuple[list[tuple[str, str, list[str]]], list[str], list[str]]:
     """Plan the `claude plugin` calls that bring local plugins up to policy.
 
@@ -679,6 +843,18 @@ def plan_claude_plugins(
         return actions, notes, failures
     known_names = {m.get("name") for m in known}
     installed_ids = {p["id"] for p in installed if p.get("scope") == "user"}
+    enabled_ids = {p["id"] for p in installed
+                   if p.get("scope") == "user" and p.get("enabled")}
+
+    # A plugin whose skills are already linked from a checkout would load
+    # them a second time if it is also installed and enabled.
+    twice = sorted(f"{plugin}@{mkt}" for mkt, plugin in discovered
+                   if f"{plugin}@{mkt}" in enabled_ids)
+    if twice:
+        notes.append("double load: installed and enabled here while their "
+                     "skills are also linked from a skill_repos checkout — "
+                     "uninstall the plugin or narrow the repo's 'plugins' "
+                     "list: " + ", ".join(twice))
 
     # The official marketplace is implied by any plugin that lives in it.
     if any(pid.endswith("@" + OFFICIAL_MARKETPLACE) for pid in want):
@@ -900,6 +1076,230 @@ def manage_plugin(
     return notes, failures
 
 
+def frontmatter_description(skill_dir: Path) -> str:
+    """The `description:` of a SKILL.md, folded scalars flattened; "" if none."""
+    try:
+        text = (skill_dir / "SKILL.md").read_text(errors="replace")
+    except OSError:
+        return ""
+    if not text.startswith("---"):
+        return ""
+    end = text.find("\n---", 3)
+    fm = text[3:end] if end != -1 else text[3:]
+    out: list[str] = []
+    grab = False
+    for ln in fm.splitlines():
+        if grab:
+            if ln.startswith((" ", "\t")):
+                out.append(ln.strip())
+                continue
+            break
+        if ln.startswith("description:"):
+            val = ln[len("description:"):].strip()
+            if val in (">", ">-", ">+", "|", "|-", "|+"):
+                grab = True
+            else:
+                out.append(val.strip("\"'"))
+                break
+    return " ".join(out)
+
+
+def plugin_always_on_tokens(pid: str) -> int | None:
+    """Parse `claude plugin details` for its always-on token estimate."""
+    try:
+        r = subprocess.run(["claude", "plugin", "details", pid],
+                           capture_output=True, text=True,
+                           stdin=subprocess.DEVNULL, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    m = re.search(r"Always-on:\s*~?([\d.,]+)\s*(k?)\s*tok", r.stdout)
+    if not m:
+        return None
+    n = float(m.group(1).replace(",", ""))
+    return int(n * 1000) if m.group(2) == "k" else int(n)
+
+
+def audit(
+    manifest_name: str, manifest: dict, state: dict, skills_target: Path
+) -> tuple[dict, list[str]]:
+    """Inventory the whole setup and flag what needs a human decision.
+
+    Findings (each {kind, severity, message, items}):
+      skill-collision          a name claimed by two skill sources
+      plugin-skill-collision   a linked skill and an enabled plugin's skill share a name
+      double-load              a plugin installed here whose skills are also linked
+      mcp-duplicate            a user-scope MCP server an enabled plugin also provides
+      unmanaged-plugins / dropped-plugins / disabled-plugins
+      unlinked-repo-skills     skills in this repo the manifest does not link
+      missing-skill-repos      skill_repos checkouts that are absent
+      context-budget           counts and always-loaded token estimates
+    Returns (report, failures).
+    """
+    failures: list[str] = []
+    findings: list[dict] = []
+    claude_ok, agy_ok = claude_installed(), agy_installed()
+
+    desired, _ = collect_desired(manifest, skills_target, claude_ok, agy_ok)
+    taken = {dst for _, _, dst in desired}
+    repo_entries, repo_warnings, missing_repos, discovered, origins = (
+        collect_repo_skills(manifest, skills_target, taken))
+    skills: list[dict] = []
+    for _, src, dst in desired + repo_entries:
+        if dst.parent != skills_target or not (src / "SKILL.md").is_file():
+            continue
+        desc = frontmatter_description(src)
+        skills.append({"name": dst.name, "path": str(src),
+                       "origin": origins.get(dst, "manifest"),
+                       "description_chars": len(desc)})
+    if repo_warnings:
+        findings.append({"kind": "skill-collision", "severity": "warn",
+                         "message": "a skill name claimed by more than one "
+                                    "source; the first listed source wins",
+                         "items": repo_warnings})
+    linked_srcs = {expand_path(e["path"]).resolve()
+                   for e in manifest.get("skills", []) if "repo" not in e}
+    unlinked = sorted(c.name for c in scan_skill_dirs(REPO / "skills")
+                      if c.resolve() not in linked_srcs)
+    if unlinked:
+        findings.append({"kind": "unlinked-repo-skills", "severity": "info",
+                         "message": "skills in this repo that the manifest "
+                                    "does not link (--add-skill to link)",
+                         "items": unlinked})
+    if missing_repos:
+        findings.append({"kind": "missing-skill-repos", "severity": "warn",
+                         "message": "skill_repos checkouts not present here",
+                         "items": [str(p) for p in missing_repos]})
+
+    plugins: dict = {}
+    user_mcp: dict = {}
+    plugin_mcp: dict[str, dict] = {}
+    plugin_costs: dict[str, int | None] = {}
+    if claude_ok and shutil.which("claude"):
+        pstatus, pfails = plugin_status(manifest_name, manifest, state)
+        failures.extend(pfails)
+        installed, err = claude_cli_json("plugin", "list")
+        if err:
+            failures.append(err)
+            installed = []
+        user_rows = [p for p in installed if p.get("scope") == "user"]
+        enabled_rows = [p for p in user_rows if p.get("enabled")]
+        plugin_skills: dict[str, list[str]] = {}
+        for p in enabled_rows:
+            pid = p["id"]
+            plugin_costs[pid] = plugin_always_on_tokens(pid)
+            plugin_skills[pid] = [d.name for d in scan_skill_dirs(
+                Path(p.get("installPath") or "/nonexistent") / "skills")]
+            if p.get("mcpServers"):
+                plugin_mcp[pid] = p["mcpServers"]
+        linked_names = {s["name"] for s in skills}
+        overlap = [f"{n} (linked) vs {n} in {pid}"
+                   for pid, names in plugin_skills.items()
+                   for n in names if n in linked_names]
+        if overlap:
+            findings.append({"kind": "plugin-skill-collision", "severity": "warn",
+                             "message": "a linked skill and an enabled plugin "
+                                        "ship a skill of the same name",
+                             "items": overlap})
+        enabled_ids = {p["id"] for p in enabled_rows}
+        twice = sorted(f"{pl}@{m}" for m, pl in discovered
+                       if f"{pl}@{m}" in enabled_ids)
+        if twice:
+            findings.append({"kind": "double-load", "severity": "warn",
+                             "message": "enabled plugins whose skills are also "
+                                        "linked from a skill_repos checkout",
+                             "items": twice})
+        for key, sev, msg in (
+            ("unmanaged", "info", "installed here, declared in no fragment — "
+                                  "the review-plugins skill triages these"),
+            ("dropped", "info", "dropped from the fragments, still installed"),
+        ):
+            if pstatus.get(key):
+                findings.append({"kind": f"{key}-plugins", "severity": sev,
+                                 "message": msg,
+                                 "items": [e["id"] for e in pstatus[key]]})
+        disabled = sorted(p["id"] for p in user_rows if not p.get("enabled"))
+        if disabled:
+            findings.append({"kind": "disabled-plugins", "severity": "info",
+                             "message": "installed but disabled here; uninstall "
+                                        "candidates if that is true everywhere",
+                             "items": disabled})
+        if CLAUDE_JSON_FILE.is_file():
+            try:
+                user_mcp = json.loads(CLAUDE_JSON_FILE.read_text()).get("mcpServers") or {}
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        def endpoint(cfg: dict) -> str:
+            if cfg.get("url"):
+                return cfg["url"].rstrip("/")
+            return " ".join([cfg.get("command", "")] + list(cfg.get("args") or [])).strip()
+
+        dup = []
+        for name, cfg in user_mcp.items():
+            for pid, servers in plugin_mcp.items():
+                for sname, scfg in servers.items():
+                    if endpoint(cfg) and endpoint(cfg) == endpoint(scfg):
+                        dup.append(f"{name} (user scope) = {sname} in {pid}")
+        if dup:
+            findings.append({"kind": "mcp-duplicate", "severity": "warn",
+                             "message": "user-scope MCP servers that an enabled "
+                                        "plugin also provides; `claude mcp remove "
+                                        "<name> -s user` drops the duplicate",
+                             "items": dup})
+        plugins = {
+            "managed": sorted(pstatus.get("managed", {})),
+            "enabled": sorted(enabled_ids),
+            "disabled": disabled,
+            "skills": plugin_skills,
+            "always_on_tokens": plugin_costs,
+        }
+
+    desc_chars = sum(s["description_chars"] for s in skills)
+    plugin_tokens = sum(v for v in plugin_costs.values() if v)
+    largest = sorted(skills, key=lambda s: s["description_chars"], reverse=True)[:8]
+    budget = {
+        "skills": len(skills),
+        "description_chars": desc_chars,
+        "description_tokens_est": desc_chars // 4,
+        "plugin_always_on_tokens": plugin_tokens,
+        "largest_descriptions": [
+            {"name": s["name"], "chars": s["description_chars"]} for s in largest],
+    }
+    findings.append({
+        "kind": "context-budget", "severity": "info",
+        "message": (f"{len(skills)} skills linked, ~{desc_chars // 4} tokens of "
+                    f"always-loaded descriptions, ~{plugin_tokens} always-on "
+                    f"tokens from {len(plugin_costs)} enabled plugins"),
+        "items": [f"{s['name']}: {s['description_chars']} chars" for s in largest],
+    })
+    report = {
+        "tool": VERSION, "manifest": manifest_name,
+        "skills": skills, "plugins": plugins,
+        "mcp": {"user_servers": sorted(user_mcp),
+                "plugin_servers": {pid: sorted(s) for pid, s in plugin_mcp.items()}},
+        "budget": budget, "findings": findings,
+    }
+    return report, failures
+
+
+def print_audit(report: dict) -> None:
+    b = report["budget"]
+    print(f"manifest: {report['manifest']}   sync-agents {report['tool']}")
+    print(f"skills linked: {b['skills']}   description text: {b['description_chars']} "
+          f"chars (~{b['description_tokens_est']} tok, always loaded)")
+    p = report.get("plugins") or {}
+    if p:
+        print(f"plugins: {len(p['enabled'])} enabled, {len(p['disabled'])} disabled, "
+              f"{len(p['managed'])} managed; always-on ~{b['plugin_always_on_tokens']} tok")
+    m = report["mcp"]
+    print(f"mcp: {len(m['user_servers'])} user-scope servers, "
+          f"{sum(len(v) for v in m['plugin_servers'].values())} from plugins")
+    for f in report["findings"]:
+        print(f"\n[{f['severity']}] {f['kind']}: {f['message']}")
+        for item in f["items"]:
+            print(f"  - {item}")
+
+
 def run_plugin_action(argv: list[str]) -> str | None:
     """Run one planned `claude plugin` call. Returns an error message or None."""
     try:
@@ -966,12 +1366,25 @@ def main() -> int:
     ap.add_argument("--all", dest="all_manifests", action="store_true",
                     help="With --add-skill/--remove-skill: apply to every manifest "
                          "in manifests/. Prints a reminder to sync each machine afterwards.")
+    ap.add_argument("--version", action="version",
+                    version=f"sync-agents {VERSION} (manifest schema "
+                            f"{MANIFEST_SCHEMA})")
+    ap.add_argument("--upgrade-manifests", action="store_true",
+                    help="Rewrite every manifest under manifests/ at the "
+                         "current schema and exit. Older manifests work "
+                         "without this (they are upgraded in memory); a "
+                         "manifest newer than this tool is refused.")
     ap.add_argument("--plugin-status", action="store_true",
                     help="Report this machine's Claude Code plugins as managed / "
                          "unmanaged / no longer managed against the target "
                          "manifest, and exit.")
+    ap.add_argument("--audit", action="store_true",
+                    help="Inventory skills, plugins and MCP servers on this "
+                         "machine against the target manifest and report "
+                         "collisions, double loads, duplicates, dead weight "
+                         "and the context budget; then exit.")
     ap.add_argument("--json", action="store_true",
-                    help="With --plugin-status: machine-readable output.")
+                    help="With --plugin-status or --audit: machine-readable output.")
     ap.add_argument("--manage-plugin", metavar="ID",
                     help="Declare plugin ID (name@marketplace) in a fragment of "
                          "the target manifest and exit. Needs --in; see --value.")
@@ -991,10 +1404,24 @@ def main() -> int:
             print(n)
         return 0
 
-    if args.plugin_status or args.manage_plugin:
+    if args.upgrade_manifests:
+        return upgrade_manifests()
+
+    if args.plugin_status or args.manage_plugin or args.audit:
         state_path = Path(args.skills_target).expanduser() / STATE_FILE_NAME
         state = load_state(state_path)
         manifest_name = args.manifest or state.get("manifest") or "default"
+        if args.audit:
+            manifest, _ = load_manifest(manifest_name)
+            report, fails = audit(manifest_name, manifest, state,
+                                  Path(args.skills_target).expanduser())
+            if args.json:
+                print(json.dumps({**report, "errors": fails}, indent=2))
+            else:
+                print_audit(report)
+                for f in fails:
+                    print(f"ERROR: {f}", file=sys.stderr)
+            return 1 if fails else 0
         if args.manage_plugin:
             if not args.fragment_kind:
                 sys.exit("--manage-plugin needs --in base|host")
@@ -1008,7 +1435,7 @@ def main() -> int:
             if not fails:
                 print("Run sync-agents to apply.")
             return 1 if fails else 0
-        manifest = load_manifest(manifest_name)
+        manifest, _ = load_manifest(manifest_name)
         report, fails = plugin_status(manifest_name, manifest, state)
         if args.json:
             print(json.dumps({**report, "errors": fails}, indent=2))
@@ -1096,7 +1523,10 @@ def main() -> int:
 
     state = load_state(state_path)
     manifest_name = args.manifest or state.get("manifest") or "default"
-    manifest = load_manifest(manifest_name)
+    manifest, upgrade_notes = load_manifest(manifest_name)
+    for n in upgrade_notes:
+        print(f"note: manifest {manifest_name!r}: {n} (in memory; run "
+              f"--upgrade-manifests to rewrite manifests/)")
     claude_ok = claude_installed()
     agy_ok = agy_installed()
 
@@ -1124,28 +1554,26 @@ def main() -> int:
         elif manifest.get(mkey):
             settings_notes.append(f"{agent} settings: skipped (not installed)")
 
+    desired, skipped = collect_desired(manifest, skills_target, claude_ok, agy_ok)
+    taken_dsts = {dst for _, _, dst in desired}
+    repo_entries, repo_warnings, missing_repos, discovered, _ = (
+        collect_repo_skills(manifest, skills_target, taken_dsts))
+    desired.extend(repo_entries)
+
     # Plugins follow the merged Claude policy: the settings pass has already
     # asserted the keys, this plans the CLI calls that make them true.
     plugin_actions: list[tuple[str, str, list[str]]] = []
     if claude_ok and applied_policy.get("claude_settings_applied") is not None:
         plugin_actions, plugin_notes, plugin_failures = plan_claude_plugins(
             applied_policy["claude_settings_applied"],
-            state.get("claude_settings_applied") or {})
+            state.get("claude_settings_applied") or {}, discovered)
         settings_notes.extend(plugin_notes)
         settings_failures.extend(plugin_failures)
 
-    desired, skipped = collect_desired(manifest, skills_target, claude_ok, agy_ok)
-    taken_dsts = {dst for _, _, dst in desired}
-    public_entries, public_warnings = collect_public_skills(skills_target, taken_dsts)
-    desired.extend(public_entries)
-
-    for repo in PUBLIC_SKILL_REPOS:
-        if not (repo / "skills").is_dir():
-            print(
-                f"note: {repo} not found — consider cloning it "
-                f"for additional skills"
-            )
-    for w in public_warnings:
+    for repo in missing_repos:
+        print(f"note: skill repo {repo} not found — clone it, or drop it "
+              f"from the manifest's skill_repos")
+    for w in repo_warnings:
         print(f"warning: {w}")
     for s in skipped:
         print(f"skipped: {s}")
