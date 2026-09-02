@@ -82,14 +82,14 @@ HANDOFF.md             session handoff, untracked; read it first when it exists
 ## Plan of record
 
 1. Settle behaviour and the manifest schema in Python, in daily use across the maintainer's
-   machines, growing the corpus as cases arise.
+   machines, growing the corpus as cases arise. Done.
 2. Port to Rust against the corpus: one static binary per platform (macOS and Linux on both
-   architectures, Windows), release builds in CI, `cargo install` and GitHub releases. The
-   port passes the corpus on macOS (2026-09-01) and type-checks for Windows and Linux. CI
-   (`.github/workflows/ci.yml`) runs the corpus on all three; `release.yml` builds the five
-   binaries on a version tag. Neither has run yet: both wait for the repo to have a remote.
-3. First public push only once the Rust binary exists, so the Python version never ships.
-   Until then the remote stays unset.
+   architectures, Windows), release builds in CI, `cargo install` and GitHub releases. Done
+   2026-09-02: CI (`.github/workflows/ci.yml`) runs the corpus, the apply-and-converge check
+   in both link modes, and the parity diff on Linux, macOS and Windows; `release.yml` builds
+   the five binaries on a version tag.
+3. Public from 0.3.0. The Python script stays as the reference the corpus is written against
+   and never ships; behaviour changes land in both.
 
 ## Working here
 

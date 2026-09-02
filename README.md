@@ -4,10 +4,10 @@ Q Branch outfits agents with their gear. This tool outfits the coding agents on 
 Code and Google Antigravity today, with the skills, instruction files, hooks, settings and
 plugins a per-machine manifest says they should have, and keeps every machine you use in step.
 
-**Status: pre-release.** The tool is in daily use across four machines. The reference
-implementation is a Python script (`bin/qbranch`); a Rust port (`src/`) produces the same plan
-and the same filesystem result on every case in the test corpus and will be the released form.
-Until the first release both are used from a checkout.
+**Status: early.** The tool is in daily use on the maintainer's machines (macOS and Linux;
+Windows is built and tested in CI but has had less real use). The released form is a single
+Rust binary. A Python script (`bin/qbranch`) is kept as the reference implementation the test
+corpus is written against; the two are held byte-for-byte identical in behaviour by CI.
 
 ## Terms
 
@@ -41,25 +41,33 @@ The full vocabulary is in [GLOSSARY.md](GLOSSARY.md).
 
 Every step is planned first; `--dry-run` shows the plan and changes nothing.
 
-## Using it from a checkout
+## Installing
+
+Download the binary for your platform from the
+[releases page](https://github.com/curtisgalloway/qbranch/releases) and put it on your `PATH`,
+or build it with a Rust toolchain:
 
 ```bash
-git clone git@github.com:curtisgalloway/qbranch.git ~/src/qbranch
-~/src/qbranch/bin/qbranch --root ~/src/my-agent-config --manifest laptop
+cargo install --git https://github.com/curtisgalloway/qbranch
 ```
 
-Or build the binary, which needs nothing but a Rust toolchain:
+Then point it at your config root once:
 
 ```bash
-cargo install --path ~/src/qbranch   # builds target/release/qbranch and puts it on PATH
 qbranch --root ~/src/my-agent-config --manifest laptop
+```
+
+The reference script needs nothing but Python 3.9+ and runs straight from a checkout:
+
+```bash
+git clone https://github.com/curtisgalloway/qbranch.git ~/src/qbranch
+~/src/qbranch/bin/qbranch --root ~/src/my-agent-config --manifest laptop
 ```
 
 Both the config root and the manifest name are remembered, so afterwards a plain `qbranch`
 re-syncs. Without either, qbranch looks for `manifests/` in the current directory and for a
 manifest named after the machine, so `cd my-agent-config && qbranch` works on a machine whose
-manifest carries its hostname. For the script, put `~/src/qbranch/bin` on your `PATH` or
-symlink `bin/qbranch` into `~/.local/bin`.
+manifest carries its hostname.
 
 **Windows.** qbranch makes symbolic links, which Windows allows once Developer Mode is on.
 Without it, qbranch falls back to copying each entry and refreshing the copies on every sync;

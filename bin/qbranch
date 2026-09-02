@@ -38,7 +38,7 @@ The sync has three parts:
 A manifest is a JSON file at manifests/<name>.json with this shape:
 
     {
-      "name": "ozone",
+      "name": "laptop",
       "description": "...",
       "schema": 2,
       "skill_repos": [
@@ -60,7 +60,7 @@ A manifest is a JSON file at manifests/<name>.json with this shape:
       ],
       "claude_settings": [
         "${QBRANCH_ROOT}/claude-code/settings.json",
-        "${QBRANCH_ROOT}/claude-code/settings/hosts/ozone.json"
+        "${QBRANCH_ROOT}/claude-code/settings/hosts/laptop.json"
       ],
       "agy_settings": [
         "${QBRANCH_ROOT}/agy/settings.json"
@@ -179,7 +179,7 @@ REPO = Path(".")
 DEFAULT_SKILLS_TARGET = Path.home() / ".agents" / "skills"
 STATE_FILE_NAME = ".qbranch-state.json"
 LEGACY_STATE_FILE_NAME = ".agent-skills-state.json"
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 # Manifests carry a `schema` (1 when absent). Older schemas are upgraded in
 # memory on every load and rewritten by --upgrade-manifests; a manifest newer
 # than MANIFEST_SCHEMA is refused, so the upgrade path is forward-only.

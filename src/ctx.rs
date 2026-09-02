@@ -9,7 +9,7 @@ use serde_json::{json, Value as Json};
 use std::env;
 use std::path::PathBuf;
 
-pub const VERSION: &str = "0.2.0";
+pub const VERSION: &str = "0.3.0";
 /// Manifests carry a `schema` (1 when absent). Older schemas are upgraded in
 /// memory on every load and rewritten by --upgrade-manifests; a manifest newer
 /// than this is refused, so the upgrade path is forward-only.

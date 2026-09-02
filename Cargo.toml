@@ -1,6 +1,6 @@
 [package]
 name = "qbranch"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 description = "Outfits a machine's coding agents from a per-machine manifest"
 license = "Apache-2.0"

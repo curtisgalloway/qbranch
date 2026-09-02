@@ -1,5 +1,5 @@
 {
-  "tool": "0.2.0",
+  "tool": "0.3.0",
   "schema": 2,
   "manifest": "<HOST>",
   "dry_run": true,
