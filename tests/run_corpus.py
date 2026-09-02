@@ -30,6 +30,9 @@ for itself whether Claude Code "is installed".
   python3 tests/run_corpus.py --bless    rewrite expected.json from the current tool
   python3 tests/run_corpus.py --show X   print the plan for one case
 
+  QBRANCH_BIN=target/release/qbranch python3 tests/run_corpus.py
+      run the same cases against a compiled port instead of bin/qbranch
+
 This corpus is the specification a port of the tool must satisfy.
 """
 import argparse
@@ -46,6 +49,14 @@ HERE = Path(__file__).resolve().parent
 TOOL = HERE.parent / "bin" / "qbranch"
 CORPUS = HERE / "corpus"
 FAKE_BIN = HERE / "fake-bin"
+
+
+def tool_cmd() -> list[str]:
+    """The tool under test: bin/qbranch via this interpreter, or $QBRANCH_BIN as-is."""
+    override = os.environ.get("QBRANCH_BIN")
+    if override:
+        return [str(Path(override).expanduser().resolve())]
+    return [sys.executable, str(TOOL)]
 
 
 def substitute(root: Path, token: str, value: str) -> None:
@@ -91,7 +102,7 @@ def run_case(name: str) -> tuple[dict, int, str]:
             "PATH": os.pathsep.join([str(bin_dir), "/usr/bin", "/bin"]),
             "LANG": "C.UTF-8",
         }
-        cmd = [sys.executable, str(TOOL), "--dry-run", "--json",
+        cmd = [*tool_cmd(), "--dry-run", "--json",
                "--manifest", spec["manifest"],
                "--skills-target", str(home / ".agents" / "skills"),
                *spec.get("args", [])]

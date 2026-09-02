@@ -4,9 +4,10 @@ Q Branch outfits agents with their gear. This tool outfits the coding agents on 
 Code and Google Antigravity today, with the skills, instruction files, hooks, settings and
 plugins a per-machine manifest says they should have, and keeps every machine you use in step.
 
-**Status: pre-release.** The tool works and is in daily use across four machines, but it is a
-Python script that will be ported to Rust, with a test corpus as the contract, before its first
-public release. Until then it is used from a checkout.
+**Status: pre-release.** The tool is in daily use across four machines. The reference
+implementation is a Python script (`bin/qbranch`); a Rust port (`src/`) produces the same plan
+and the same filesystem result on every case in the test corpus and will be the released form.
+Until the first release both are used from a checkout.
 
 ## Terms
 
@@ -46,8 +47,16 @@ git clone git@github.com:curtisgalloway/qbranch.git ~/src/qbranch
 ~/src/qbranch/bin/qbranch --root ~/src/my-agent-config --manifest laptop
 ```
 
+Or build the binary, which needs nothing but a Rust toolchain:
+
+```bash
+cargo install --path ~/src/qbranch   # builds target/release/qbranch and puts it on PATH
+qbranch --root ~/src/my-agent-config --manifest laptop
+```
+
 Both the config root and the manifest name are remembered, so afterwards a plain `qbranch`
-re-syncs. Put `~/src/qbranch/bin` on your `PATH` or symlink `bin/qbranch` into `~/.local/bin`.
+re-syncs. For the script, put `~/src/qbranch/bin` on your `PATH` or symlink `bin/qbranch` into
+`~/.local/bin`.
 
 Everyday commands:
 
@@ -117,13 +126,15 @@ them.
 ## Tests
 
 ```bash
-python3 tests/run_corpus.py
+python3 tests/run_corpus.py                                      # the Python reference
+cargo build --release && QBRANCH_BIN=target/release/qbranch python3 tests/run_corpus.py
+python3 tests/run_parity.py    # apply every case with both and diff what they leave behind
 ```
 
 Runs every case under `tests/corpus/` in a temporary copy with `HOME`, `CLAUDE_CONFIG_DIR`,
 `QBRANCH_ROOT` and `PATH` pointed inside it and a fake `claude` answering the plugin queries, so
-nothing on the machine is read or touched. The corpus is the specification the Rust port must
-satisfy; see `AGENTS.md` for how to extend it.
+nothing on the machine is read or touched. The corpus is the specification both implementations
+must satisfy; see `AGENTS.md` for how to extend it.
 
 ## License
 
