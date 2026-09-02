@@ -6,7 +6,10 @@
 Each case under tests/corpus/<name>/ holds:
 
   case.json      {"manifest": "<name>", "args": [...], "rc": 0,
-                  "stderr_contains": "..."}   (all but manifest optional)
+                  "stderr_contains": "...", "git_dirs": ["home/src/x"]}
+                 (all but manifest optional; git_dirs names fixture
+                 directories the tool must see as git checkouts — an
+                 empty .git is created in each, since git cannot track one)
   root/          the config root the tool is pointed at: manifests/,
                  skills/, claude-code/ fragments
   home/          the fake $HOME: .claude/, .agents/skills/, src/<repos>/
@@ -70,6 +73,8 @@ def run_case(name: str) -> tuple[dict, int, str]:
         case_dir = str(Path(tmp).resolve())
         shutil.copytree(src, case_dir, symlinks=True, dirs_exist_ok=True)
         substitute(Path(case_dir), "<CASE>", case_dir)
+        for rel in spec.get("git_dirs", []):
+            (Path(case_dir) / rel / ".git").mkdir(parents=True, exist_ok=True)
         home = Path(case_dir) / "home"
         home.mkdir(exist_ok=True)
         bin_dir = Path(case_dir) / "bin"

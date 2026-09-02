@@ -1358,7 +1358,8 @@ def migrate_skills_dir(dst: Path, src: Path) -> str | None:
     Stale symlinks inside have already been removed by the cleanup pass.
     Returns an error message, or None on success.
     """
-    for junk in (dst / STATE_FILE_NAME, dst / ".DS_Store"):
+    for junk in (dst / STATE_FILE_NAME, dst / LEGACY_STATE_FILE_NAME,
+                 dst / ".DS_Store"):
         if junk.is_file():
             junk.unlink()
     try:

@@ -1,0 +1,26 @@
+{
+  "schema": 2,
+  "name": "repo",
+  "description": "corpus case repo: a repo-form skills entry resolved against a local ~/src checkout",
+  "skill_repos": [],
+  "skills": [
+    {
+      "name": "alpha",
+      "path": "${QBRANCH_ROOT}/skills/alpha"
+    },
+    {
+      "name": "gamma",
+      "repo": "git@github.com:example/local-repo.git",
+      "path": "skills/gamma"
+    }
+  ],
+  "links": [
+    {
+      "src": "${QBRANCH_ROOT}/claude-code/CLAUDE.md",
+      "dst": "${HOME}/.claude/CLAUDE.md"
+    }
+  ],
+  "claude_settings": [
+    "${QBRANCH_ROOT}/claude-code/settings.json"
+  ]
+}

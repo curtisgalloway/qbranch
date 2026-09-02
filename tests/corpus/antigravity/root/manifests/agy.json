@@ -1,0 +1,32 @@
+{
+  "schema": 2,
+  "name": "agy",
+  "description": "corpus case agy: a machine with both Claude Code and Antigravity",
+  "skill_repos": [],
+  "skills": [
+    {
+      "name": "alpha",
+      "path": "${QBRANCH_ROOT}/skills/alpha"
+    },
+    {
+      "name": "beta",
+      "path": "${QBRANCH_ROOT}/skills/beta"
+    }
+  ],
+  "links": [
+    {
+      "src": "${QBRANCH_ROOT}/claude-code/CLAUDE.md",
+      "dst": "${HOME}/.claude/CLAUDE.md"
+    },
+    {
+      "src": "${QBRANCH_ROOT}/agy/AGENTS.md",
+      "dst": "${HOME}/.gemini/AGENTS.md"
+    }
+  ],
+  "claude_settings": [
+    "${QBRANCH_ROOT}/claude-code/settings.json"
+  ],
+  "agy_settings": [
+    "${QBRANCH_ROOT}/agy/settings.json"
+  ]
+}
