@@ -32,16 +32,16 @@
     },
     {
       "op": "link",
-      "label": "claude-skills",
-      "src": "<CASE>/home/.agents/skills",
-      "dst": "<CASE>/home/.claude/skills",
+      "label": "plain-two",
+      "src": "<CASE>/home/src/plain-repo/skills/plain-two",
+      "dst": "<CASE>/home/.agents/skills/plain-two",
       "note": ""
     },
     {
       "op": "link",
-      "label": "plain-two",
-      "src": "<CASE>/home/src/plain-repo/skills/plain-two",
-      "dst": "<CASE>/home/.agents/skills/plain-two",
+      "label": "claude-skills",
+      "src": "<CASE>/home/.agents/skills",
+      "dst": "<CASE>/home/.claude/skills",
       "note": ""
     }
   ],

@@ -2,9 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Every push and pull request: format and lint the port, build it, run the
-# corpus against the Python reference and against the binary, and diff
-# what the two leave behind. Windows runs the binary only: the reference
-# never ships there.
+# corpus against the Python reference and against the binary, apply every
+# case for real in both link modes and require the next dry run to find
+# nothing to do, and diff what the two implementations leave behind.
+# Windows runs the binary only: the reference never ships there.
 
 name: ci
 
@@ -14,6 +15,9 @@ on:
 
 permissions:
   contents: read
+
+env:
+  QBRANCH_BIN: ${{ startsWith(matrix.os, 'windows') && 'target/release/qbranch.exe' || 'target/release/qbranch' }}
 
 jobs:
   check:
@@ -26,8 +30,8 @@ jobs:
       - name: Let git create real symlinks (the corpus fixtures hold some)
         if: runner.os == 'Windows'
         run: git config --global core.symlinks true
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - uses: dtolnay/rust-toolchain@stable
@@ -36,17 +40,24 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo build --release
-      - name: Corpus against the Python reference
+      - name: Corpus, Python reference
         if: runner.os != 'Windows'
         run: python tests/run_corpus.py
-      - name: Corpus against the binary
+        env:
+          QBRANCH_BIN: ""
+      - name: Corpus, Python reference, applied
+        if: runner.os != 'Windows'
+        run: python tests/run_corpus.py --apply
+        env:
+          QBRANCH_BIN: ""
+      - name: Corpus, binary
         run: python tests/run_corpus.py
+      - name: Corpus, binary, applied
+        run: python tests/run_corpus.py --apply
+      - name: Corpus, binary, applied in copy mode
+        run: python tests/run_corpus.py --apply
         env:
-          QBRANCH_BIN: ${{ runner.os == 'Windows' && 'target/release/qbranch.exe' || 'target/release/qbranch' }}
-      - name: Corpus against the binary in copy mode
-        run: python tests/run_corpus.py copy-mode copy-to-symlink
-        env:
-          QBRANCH_BIN: ${{ runner.os == 'Windows' && 'target/release/qbranch.exe' || 'target/release/qbranch' }}
+          QBRANCH_LINK_MODE: copy
       - name: Apply parity, reference versus binary
         if: runner.os != 'Windows'
         run: python tests/run_parity.py

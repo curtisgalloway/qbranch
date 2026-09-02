@@ -138,6 +138,8 @@ them.
 python3 tests/run_corpus.py                                      # the Python reference
 cargo build --release && QBRANCH_BIN=target/release/qbranch python3 tests/run_corpus.py
 python3 tests/run_parity.py    # apply every case with both and diff what they leave behind
+python3 tests/run_corpus.py --apply           # apply for real; the next dry run must be a no-op
+QBRANCH_LINK_MODE=copy python3 tests/run_corpus.py --apply   # the same in copy mode
 ```
 
 Runs every case under `tests/corpus/` in a temporary copy with `HOME`, `CLAUDE_CONFIG_DIR`,

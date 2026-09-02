@@ -19,8 +19,10 @@ Each case under tests/corpus/<name>/ holds:
                    "hostname_manifest": "h"  rename root/manifests/h.json to
                                              this machine's short hostname
                                              (its name prints as <HOST>)
-                   "rc": 0                   expected exit code
+                   "rc": 0                   expected exit code of the dry run
                    "stderr_contains": "..."  for a refusal, the text to expect
+                   "apply_rc": 0             expected exit code under --apply
+                                             (a case that fails on purpose)
   root/          the config root the tool is pointed at: manifests/,
                  skills/, claude-code/ fragments
   home/          the fake $HOME: .claude/, .agents/skills/, src/<repos>/
@@ -41,13 +43,19 @@ comparison. Nothing outside the temporary directory is touched; the real
   python3 tests/run_corpus.py fresh-machine stale-links
   python3 tests/run_corpus.py --bless    rewrite expected.json from the current tool
   python3 tests/run_corpus.py --show X   print the plan for one case
+  python3 tests/run_corpus.py --apply    apply each case for real, then require
+                                         the next dry run to find nothing to do
 
   QBRANCH_BIN=target/release/qbranch python3 tests/run_corpus.py
       run the same cases against a compiled port instead of bin/qbranch
+  QBRANCH_LINK_MODE=copy python3 tests/run_corpus.py --apply
+      the convergence check in copy mode (plans are not compared there)
 
 This corpus is the specification every implementation must satisfy;
 run_parity.py builds on the same sandbox to compare two of them.
 """
+from __future__ import annotations
+
 import argparse
 import difflib
 import json
@@ -64,6 +72,10 @@ TOOL = HERE.parent / "bin" / "qbranch"
 CORPUS = HERE / "corpus"
 FAKE_BIN = HERE / "fake-bin"
 WINDOWS = os.name == "nt"
+# After an apply, the next plan may only confirm what is there. Plugin
+# actions are exempt: the fake `claude` records installs without changing
+# what it later reports.
+CONVERGED_OPS = {"ok"}
 
 
 def tool_cmd() -> list[str]:
@@ -80,10 +92,12 @@ def short_hostname() -> str:
 
 
 def substitute(root: Path, token: str, value: str) -> None:
+    """Replace token in every .json file, JSON-escaped (Windows backslashes)."""
+    escaped = json.dumps(value)[1:-1]
     for p in root.rglob("*.json"):
         text = p.read_text(encoding="utf-8")
         if token in text:
-            p.write_text(text.replace(token, value), encoding="utf-8")
+            p.write_text(text.replace(token, escaped), encoding="utf-8")
 
 
 def install_fake_claude(bin_dir: Path) -> None:
@@ -139,9 +153,11 @@ class Sandbox:
             "PYTHONDONTWRITEBYTECODE": "1",
         }
         if WINDOWS:
-            for k in ("SystemRoot", "TEMP", "TMP", "PATHEXT", "COMSPEC"):
+            for k in ("SystemRoot", "TEMP", "TMP", "PATHEXT", "COMSPEC", "COMPUTERNAME"):
                 if k in os.environ:
                     self.env[k] = os.environ[k]
+        if "QBRANCH_LINK_MODE" in os.environ:
+            self.env["QBRANCH_LINK_MODE"] = os.environ["QBRANCH_LINK_MODE"]
         for k, v in self.spec.get("env", {}).items():
             if v is None:
                 self.env.pop(k, None)
@@ -161,6 +177,17 @@ class Sandbox:
         return subprocess.run(self.argv(tool, extra), capture_output=True,
                               text=True, env=self.env, cwd=self.cwd,
                               stdin=subprocess.DEVNULL)
+
+    def plan(self, tool: list[str]) -> tuple[dict | None, int, str]:
+        """The dry-run plan, normalised; (None, rc, stderr) when there is none."""
+        r = self.run(tool, ["--dry-run", "--json"])
+        plan = None
+        if r.stdout.strip():
+            try:
+                plan = self.normalise(json.loads(r.stdout))
+            except json.JSONDecodeError:
+                plan = {"stdout": r.stdout}
+        return plan, r.returncode, self.norm(r.stderr)
 
     def norm(self, s: str) -> str:
         """Replace the case directory (and this host's name) with tokens."""
@@ -188,16 +215,44 @@ def run_case(name: str) -> tuple[dict, int, str]:
     """Run the tool's dry-run plan for one case; return (plan, rc, stderr)."""
     sb = Sandbox(name)
     try:
-        r = sb.run(tool_cmd(), ["--dry-run", "--json"])
-        plan = None
-        if r.stdout.strip():
-            try:
-                plan = sb.normalise(json.loads(r.stdout))
-            except json.JSONDecodeError:
-                plan = {"stdout": r.stdout}
-        return plan, r.returncode, sb.norm(r.stderr)
+        return sb.plan(tool_cmd())
     finally:
         sb.close()
+
+
+def apply_case(name: str) -> list[str] | None:
+    """Apply a case for real, then dry-run again; return the problems found.
+
+    None means the case is a refusal and was not applied.
+    """
+    sb = Sandbox(name)
+    try:
+        if sb.spec.get("rc", 0) != 0:
+            return None
+        r = sb.run(tool_cmd(), [])
+        want = sb.spec.get("apply_rc", 0)
+        problems = []
+        if r.returncode != want:
+            problems.append(f"apply rc={r.returncode} (want {want})\n"
+                            + sb.norm(r.stderr).strip())
+        if want != 0:
+            return problems
+        plan, rc, err = sb.plan(tool_cmd())
+        if not plan or "actions" not in plan:
+            return problems + [f"no plan after apply (rc={rc})\n{err.strip()}"]
+        left = [a for a in plan["actions"] if a["op"] not in CONVERGED_OPS]
+        if left:
+            problems.append("not converged: " + ", ".join(
+                f"{a['op']} {a['label']} {a['note']}".rstrip() for a in left))
+        if plan.get("failures"):
+            problems.append("failures after apply: " + "; ".join(plan["failures"]))
+        return problems
+    finally:
+        sb.close()
+
+
+def all_case_names() -> list[str]:
+    return sorted(p.name for p in CORPUS.iterdir() if (p / "case.json").is_file())
 
 
 def main() -> int:
@@ -206,6 +261,9 @@ def main() -> int:
     ap.add_argument("--bless", action="store_true",
                     help="rewrite each case's expected.json from the current tool")
     ap.add_argument("--show", metavar="CASE", help="print one case's plan and exit")
+    ap.add_argument("--apply", action="store_true",
+                    help="apply each case for real in its sandbox, then require "
+                         "the next dry run to find nothing left to do")
     args = ap.parse_args()
 
     if args.show:
@@ -216,8 +274,26 @@ def main() -> int:
             print(err, file=sys.stderr)
         return 0
 
-    names = args.cases or sorted(p.name for p in CORPUS.iterdir()
-                                 if (p / "case.json").is_file())
+    names = args.cases or all_case_names()
+
+    if args.apply:
+        failed = applied = 0
+        for name in names:
+            problems = apply_case(name)
+            if problems is None:
+                print(f"skip  {name}  (a refusal; nothing to apply)")
+                continue
+            applied += 1
+            if problems:
+                failed += 1
+                print(f"FAIL  {name}")
+                for p in problems:
+                    print("  " + p.replace("\n", "\n  "))
+            else:
+                print(f"ok    {name}")
+        print(f"\n{applied - failed}/{applied} applied cases converge")
+        return 1 if failed else 0
+
     failed = 0
     for name in names:
         spec = json.loads((CORPUS / name / "case.json").read_text())

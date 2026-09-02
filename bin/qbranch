@@ -1775,6 +1775,10 @@ def sync(args: argparse.Namespace, skills_target: Path, state_path: Path) -> int
     repo_entries, repo_warnings, missing_repos, discovered, _ = (
         collect_repo_skills(manifest, skills_target, taken_dsts))
     desired.extend(repo_entries)
+    # A copy of the skills directory can only be made once everything in it
+    # is there: the per-harness skills entries go last.
+    desired = ([d for d in desired if d[1] != skills_target]
+               + [d for d in desired if d[1] == skills_target])
 
     # Plugins follow the merged Claude policy: the settings pass has already
     # asserted the keys, this plans the CLI calls that make them true.

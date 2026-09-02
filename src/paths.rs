@@ -193,12 +193,21 @@ fn candidates(dir: &Path, name: &str) -> Vec<PathBuf> {
 
 #[cfg(windows)]
 fn candidates(dir: &Path, name: &str) -> Vec<PathBuf> {
-    let exts = env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
-    let mut out = vec![dir.join(name)];
-    for ext in exts.split(';').filter(|e| !e.is_empty()) {
-        out.push(dir.join(format!("{name}{ext}")));
+    // Like shutil.which: a name without one of the PATHEXT extensions is
+    // tried with each of them and never bare, since a bare file cannot run.
+    let exts: Vec<String> = env::var("PATHEXT")
+        .unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string())
+        .split(';')
+        .filter(|e| !e.is_empty())
+        .map(|e| e.to_lowercase())
+        .collect();
+    let lower = name.to_lowercase();
+    if exts.iter().any(|e| lower.ends_with(e.as_str())) {
+        return vec![dir.join(name)];
     }
-    out
+    exts.iter()
+        .map(|e| dir.join(format!("{name}{e}")))
+        .collect()
 }
 
 #[cfg(not(windows))]

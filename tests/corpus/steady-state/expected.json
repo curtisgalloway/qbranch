@@ -32,13 +32,6 @@
     },
     {
       "op": "ok",
-      "label": "claude-skills",
-      "src": "<CASE>/home/.agents/skills",
-      "dst": "<CASE>/home/.claude/skills",
-      "note": ""
-    },
-    {
-      "op": "ok",
       "label": "plain-one",
       "src": "<CASE>/home/src/plain-repo/skills/plain-one",
       "dst": "<CASE>/home/.agents/skills/plain-one",
@@ -63,6 +56,13 @@
       "label": "t-a2",
       "src": "<CASE>/home/src/mkt-repo/skills/t-a2",
       "dst": "<CASE>/home/.agents/skills/t-a2",
+      "note": ""
+    },
+    {
+      "op": "ok",
+      "label": "claude-skills",
+      "src": "<CASE>/home/.agents/skills",
+      "dst": "<CASE>/home/.claude/skills",
       "note": ""
     }
   ],

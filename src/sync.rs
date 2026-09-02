@@ -269,6 +269,11 @@ pub fn run(ctx: &mut Ctx, args: &SyncArgs) -> i32 {
     let taken: HashSet<PathBuf> = desired.iter().map(|d| d.dst.clone()).collect();
     let repo = collect_repo_skills(ctx, &manifest, &skills_target, &taken);
     desired.extend(repo.entries.iter().cloned());
+    // A copy of the skills directory can only be made once everything in it
+    // is there: the per-harness skills entries go last.
+    let (harness, rest): (Vec<_>, Vec<_>) =
+        desired.into_iter().partition(|d| d.src == skills_target);
+    let desired: Vec<_> = rest.into_iter().chain(harness).collect();
 
     // Plugins follow the merged Claude policy: the settings pass has already
     // asserted the keys, this plans the CLI calls that make them true.

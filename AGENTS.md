@@ -19,7 +19,8 @@ src/                   the Rust port, function for function; Cargo.toml at the r
   state.rs             the state file                 plugins.rs   reconcile, status, manage
   audit.rs             --audit                        paths.rs     pathlib/os.path parity
   proc.rs              subprocesses with timeouts     util.rs      JSON I/O, Python repr()
-tests/run_corpus.py    runs the corpus; --show CASE, --bless; QBRANCH_BIN=<binary> for the port
+tests/run_corpus.py    runs the corpus; --show CASE, --bless, --apply; QBRANCH_BIN=<binary>
+                       for the port
 tests/run_parity.py    applies every case for real with both implementations and diffs the
                        results, plus the --plugin-status / --audit / --list output
 tests/fake-bin/claude  stand-in for the claude CLI, driven by a case's claude.json
@@ -43,9 +44,11 @@ HANDOFF.md             session handoff, untracked; read it first when it exists
   with each implementation and diffs what they leave behind; run it too before a commit
   that touches the apply path, the state file or a report.
 - **Link modes are always tested.** Every change to how entries are materialised gets a
-  case in both modes (`copy-mode`, `copy-to-symlink` and the `link` cases are the pattern),
-  and CI runs the corpus on Windows against the binary. Copy mode is forced there with
-  `--link-mode copy`; the automatic Windows fallback is a single probe on top of the same
+  case in both modes (`copy-mode`, `copy-to-symlink` and the `link` cases are the pattern).
+  `python3 tests/run_corpus.py --apply` applies every case for real and requires the next
+  dry run to find nothing left to do; CI runs it on Linux, macOS and Windows in both
+  modes (`QBRANCH_LINK_MODE=copy` for the second), so links and copies are actually made
+  on every platform. The automatic Windows fallback is a single probe on top of the same
   code.
 - **Links, never copies** above means qbranch never writes a file *of its own* into a home
   directory besides the state file. A copy made in copy mode is a copy of the source,

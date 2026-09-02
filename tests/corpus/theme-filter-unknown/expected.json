@@ -32,16 +32,16 @@
     },
     {
       "op": "link",
-      "label": "claude-skills",
-      "src": "<CASE>/home/.agents/skills",
-      "dst": "<CASE>/home/.claude/skills",
+      "label": "t-b1",
+      "src": "<CASE>/home/src/mkt-repo/skills/t-b1",
+      "dst": "<CASE>/home/.agents/skills/t-b1",
       "note": ""
     },
     {
       "op": "link",
-      "label": "t-b1",
-      "src": "<CASE>/home/src/mkt-repo/skills/t-b1",
-      "dst": "<CASE>/home/.agents/skills/t-b1",
+      "label": "claude-skills",
+      "src": "<CASE>/home/.agents/skills",
+      "dst": "<CASE>/home/.claude/skills",
       "note": ""
     }
   ],
