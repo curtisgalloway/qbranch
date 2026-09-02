@@ -100,6 +100,26 @@ def substitute(root: Path, token: str, value: str) -> None:
             p.write_text(text.replace(token, escaped), encoding="utf-8")
 
 
+def recreate_symlinks(root: Path) -> None:
+    """Give each fixture symlink the right kind on Windows.
+
+    shutil.copytree recreates every symlink as a file symlink there, and a
+    file symlink that points at a directory cannot be read through, so a
+    link to a skill directory has to be remade as a directory symlink.
+    """
+    if not WINDOWS:
+        return
+    links = [p for p in root.rglob("*") if p.is_symlink()]
+    for link in links:
+        target = os.readlink(link)
+        resolved = Path(target) if os.path.isabs(target) else link.parent / target
+        try:
+            link.unlink()
+        except OSError:
+            os.rmdir(link)
+        os.symlink(target, link, target_is_directory=resolved.is_dir())
+
+
 def install_fake_claude(bin_dir: Path) -> None:
     """Put the fake `claude` on the case's PATH, as a .cmd shim on Windows."""
     shutil.copy(FAKE_BIN / "claude", bin_dir / "claude")
@@ -126,6 +146,7 @@ class Sandbox:
         self._tmp = tempfile.TemporaryDirectory(prefix=f"corpus-{name}-")
         self.dir = str(Path(self._tmp.name).resolve())
         shutil.copytree(src, self.dir, symlinks=True, dirs_exist_ok=True)
+        recreate_symlinks(Path(self.dir))
         substitute(Path(self.dir), "<CASE>", self.dir)
         for rel in self.spec.get("mkdirs", []):
             (Path(self.dir) / rel).mkdir(parents=True, exist_ok=True)
