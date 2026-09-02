@@ -238,11 +238,15 @@ pub fn symlink(src: &Path, dst: &Path) -> std::io::Result<()> {
     }
 }
 
-/// Remove a symlink (or file) at `p` without following it.
+/// Remove a symlink (or file) at `p` without following it. On Windows a
+/// directory symlink is a directory to the removal call, whatever its own
+/// metadata says.
 pub fn unlink(p: &Path) -> std::io::Result<()> {
     #[cfg(windows)]
     {
-        if fs::symlink_metadata(p)?.is_dir() {
+        use std::os::windows::fs::FileTypeExt;
+        let ft = fs::symlink_metadata(p)?.file_type();
+        if ft.is_dir() || ft.is_symlink_dir() {
             return fs::remove_dir(p);
         }
     }
