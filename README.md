@@ -1,6 +1,6 @@
 # qbranch
 
-Q Branch outfits agents with their gear. This tool outfits the coding agents on a machine, Claude
+[Q Branch](https://en.wikipedia.org/wiki/Q_(James_Bond)) outfits agents with their gear. This tool outfits the coding agents on a machine, Claude
 Code and Google Antigravity today, with the skills, instruction files, hooks, settings and
 plugins a per-machine manifest says they should have, and keeps every machine you use in step.
 
