@@ -90,6 +90,12 @@ HANDOFF.md             session handoff, untracked; read it first when it exists
   section when it arrives.
 - **Headers.** Executable files carry the two-line SPDX header; Markdown carries none. `LICENSE`
   is Apache 2.0.
+- **British spellings, on purpose.** The name is a Bond joke, so this repo writes "behaviour",
+  "materialised" and "colour" in docs, comments and output strings alike. This is a deliberate
+  exception to the user-level rule that everything else uses American spellings (decided
+  2026-09-02); do not sweep it. Output strings are byte for byte the same in both
+  implementations and several are pinned in the corpus, so a spelling change there is a
+  behaviour change.
 
 ## Plan of record
 
