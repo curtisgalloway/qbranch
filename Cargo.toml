@@ -8,6 +8,17 @@ repository = "https://github.com/curtisgalloway/qbranch"
 readme = "README.md"
 keywords = ["claude-code", "agents", "skills", "dotfiles"]
 categories = ["command-line-utilities"]
+# The crate is the Rust port and its docs. The reference script and the test
+# corpus stay out: the corpus fixtures hold deliberately dangling symlinks,
+# and nothing that `cargo install` builds needs either.
+include = [
+    "/src",
+    "/Cargo.toml",
+    "/Cargo.lock",
+    "/LICENSE",
+    "/README.md",
+    "/GLOSSARY.md",
+]
 
 [[bin]]
 name = "qbranch"
@@ -24,3 +35,14 @@ libc = "0.2"
 strip = true
 lto = true
 codegen-units = 1
+
+# `cargo binstall qbranch` fetches the release archive for the host instead of
+# building. The archives hold one top-level directory named like the archive;
+# release.yml is what produces them, so the two templates must agree with it.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-v{ version }-{ target }{ archive-suffix }"
+bin-dir = "{ name }-v{ version }-{ target }/{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-fmt = "zip"

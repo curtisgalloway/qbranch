@@ -1,0 +1,115 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+SPDX-FileCopyrightText: 2026 Curtis Galloway
+SPDX-License-Identifier: Apache-2.0
+
+The qbranch per-user MSI (WiX v7), built by packaging\windows\build.ps1.
+
+Preprocessor variables, both passed by build.ps1:
+  Version   three-field MSI ProductVersion
+  StageDir  the staged payload build.ps1 lays out: bin\qbranch.exe,
+            share\qbranch\skills\<name>\SKILL.md, doc\LICENSE, doc\README.md.
+            The same bin-beside-share prefix the .deb and the tarball install.
+
+Design notes, the same ones as oxbox's Package.wxs, which this follows:
+  - Scope="perUser": installs under %LOCALAPPDATA%\Programs\qbranch with no
+    UAC prompt, and puts bin\ on the user's PATH (HKCU, System="no"). A CLI
+    that needs elevation to install is a CLI people do not install.
+  - Every component keypaths on an HKCU registry value, which per-user file
+    components require (ICE38). Those components therefore cannot
+    auto-generate their guids (WIX0230), so the guids below are permanent
+    identity, like the UpgradeCode: never regenerate them.
+  - One component per directory: a component's files must share a directory,
+    and this package has no servicing story that would want finer grain.
+  - MajorUpgrade: a newer MSI replaces the old install in place, and
+    Add/Remove Programs shows exactly one "qbranch" entry. This is also what
+    makes `winget upgrade` clean once the package is in winget.
+  - The skills are listed one file each; WiX has no glob. A new skill needs a
+    directory and a component here, and build.ps1 refuses to build when
+    skills\ in the checkout holds one this file does not know, so the
+    omission cannot ship silently.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="qbranch"
+           Manufacturer="Curtis Galloway"
+           Version="$(var.Version)"
+           UpgradeCode="C340182A-1109-40EB-BB4C-6A33FED3B357"
+           Scope="perUser"
+           Language="1033"
+           Codepage="1252"
+           Compressed="yes">
+
+    <SummaryInformation Description="qbranch - outfits a machine's coding agents from a per-machine manifest" />
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of qbranch is already installed. Uninstall it first to install this older version." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Property Id="ARPNOMODIFY" Value="1" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/curtisgalloway/qbranch" />
+
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="ProgramsDir" Name="Programs">
+        <Directory Id="INSTALLFOLDER" Name="qbranch">
+          <Directory Id="BINFOLDER" Name="bin" />
+          <Directory Id="ShareDir" Name="share">
+            <Directory Id="ShareQbranchDir" Name="qbranch">
+              <Directory Id="SkillsDir" Name="skills">
+                <Directory Id="SkillReviewPluginsDir" Name="review-plugins" />
+                <Directory Id="SkillAgentAuditDir" Name="agent-audit" />
+              </Directory>
+            </Directory>
+          </Directory>
+          <Directory Id="DocDir" Name="doc" />
+        </Directory>
+      </Directory>
+    </StandardDirectory>
+
+    <ComponentGroup Id="QbranchComponents">
+      <!-- The executable, and the PATH entry that makes it typeable. -->
+      <Component Id="cmpBin" Directory="BINFOLDER" Guid="14CDAAA1-D28C-4751-B966-3A7D694A2D37">
+        <File Id="filQbranch" Name="qbranch.exe" Source="$(var.StageDir)\bin\qbranch.exe" />
+        <Environment Id="envPath" Name="PATH" Value="[BINFOLDER]" Action="set"
+                     Part="last" System="no" Permanent="no" />
+        <RegistryValue Root="HKCU" Key="Software\qbranch\msi" Name="bin"
+                       Value="[INSTALLFOLDER]" Type="string" KeyPath="yes" />
+        <RemoveFolder Id="rmBinFolder" Directory="BINFOLDER" On="uninstall" />
+        <RemoveFolder Id="rmInstallFolder" Directory="INSTALLFOLDER" On="uninstall" />
+        <!-- Only removed if empty; %LOCALAPPDATA%\Programs usually preexists
+             and stays. Keeps ICE64 quiet. -->
+        <RemoveFolder Id="rmProgramsDir" Directory="ProgramsDir" On="uninstall" />
+      </Component>
+
+      <!-- The tool's own skills. The binary never reads them; a manifest
+           links them, and a packaged install with no checkout has no other
+           source for them. -->
+      <Component Id="cmpSkillReviewPlugins" Directory="SkillReviewPluginsDir" Guid="BF30B7AF-5465-40A4-9CE1-41848E46A9C3">
+        <File Id="filSkillReviewPlugins" Name="SKILL.md" Source="$(var.StageDir)\share\qbranch\skills\review-plugins\SKILL.md" />
+        <RegistryValue Root="HKCU" Key="Software\qbranch\msi" Name="skill-review-plugins"
+                       Value="1" Type="integer" KeyPath="yes" />
+        <RemoveFolder Id="rmSkillReviewPluginsDir" Directory="SkillReviewPluginsDir" On="uninstall" />
+        <RemoveFolder Id="rmSkillsDir" Directory="SkillsDir" On="uninstall" />
+        <RemoveFolder Id="rmShareQbranchDir" Directory="ShareQbranchDir" On="uninstall" />
+        <RemoveFolder Id="rmShareDir" Directory="ShareDir" On="uninstall" />
+      </Component>
+
+      <Component Id="cmpSkillAgentAudit" Directory="SkillAgentAuditDir" Guid="D156D4A9-D09B-4ACD-BF78-84C96CC34FFD">
+        <File Id="filSkillAgentAudit" Name="SKILL.md" Source="$(var.StageDir)\share\qbranch\skills\agent-audit\SKILL.md" />
+        <RegistryValue Root="HKCU" Key="Software\qbranch\msi" Name="skill-agent-audit"
+                       Value="1" Type="integer" KeyPath="yes" />
+        <RemoveFolder Id="rmSkillAgentAuditDir" Directory="SkillAgentAuditDir" On="uninstall" />
+      </Component>
+
+      <Component Id="cmpDoc" Directory="DocDir" Guid="16103231-DB2D-44AB-B77E-45F93A107A8D">
+        <File Id="filLicense" Name="LICENSE" Source="$(var.StageDir)\doc\LICENSE" />
+        <File Id="filReadme" Name="README.md" Source="$(var.StageDir)\doc\README.md" />
+        <RegistryValue Root="HKCU" Key="Software\qbranch\msi" Name="doc"
+                       Value="1" Type="integer" KeyPath="yes" />
+        <RemoveFolder Id="rmDocDir" Directory="DocDir" On="uninstall" />
+      </Component>
+    </ComponentGroup>
+
+    <Feature Id="Main" Title="qbranch" Level="1" AllowAbsent="no">
+      <ComponentGroupRef Id="QbranchComponents" />
+    </Feature>
+  </Package>
+</Wix>

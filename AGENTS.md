@@ -26,6 +26,10 @@ tests/run_parity.py    applies every case for real with both implementations and
 tests/fake-bin/claude  stand-in for the claude CLI, driven by a case's claude.json
 tests/corpus/<case>/   fixture root + home + expected plan; see run_corpus.py's docstring
 skills/                the tool's own skills: review-plugins, agent-audit
+packaging/nfpm.yaml    the Linux .deb (nfpm), built by release.yml from the musl binary
+packaging/windows/     the per-user MSI: Package.wxs (WiX v7) and build.ps1, which stages the
+                       payload and refuses to build when skills/ holds one the wxs lacks
+.github/workflows/     ci.yml on every push; release.yml on a version tag (see Releasing)
 GLOSSARY.md            the vocabulary; add a term before using it in a document
 HANDOFF.md             session handoff, untracked; read it first when it exists
 ```
@@ -90,6 +94,60 @@ HANDOFF.md             session handoff, untracked; read it first when it exists
    the five binaries on a version tag.
 3. Public from 0.3.0. The Python script stays as the reference the corpus is written against
    and never ships; behaviour changes land in both.
+4. Installable releases: Homebrew for macOS, a `.deb` for Linux, a signed per-user MSI for
+   Windows, the crate for `cargo install`, all from one tag. See Releasing. winget follows
+   once the first manifest has been submitted by hand.
+
+## Releasing
+
+1. Bump `VERSION` in `bin/qbranch` and `version` in `Cargo.toml`, run `cargo build` so
+   `Cargo.lock` follows (the release builds with `--locked`), and commit.
+2. Tag `vX.Y.Z` and push the tag. The `version` job refuses a tag that disagrees with either
+   version string.
+3. `release.yml` builds macOS on both architectures, Linux for musl on both architectures
+   (fully static) and Windows; runs the corpus against each binary on a native runner;
+   packages a tarball per target, the `.deb` and the MSI; installs and exercises each package
+   in the job that built it; attaches everything with `SHA256SUMS` to the GitHub release; then
+   dispatches the tap bump and publishes the crate. `workflow_dispatch` runs the same pipeline
+   as artifacts only, with no release and no fan-out, for testing it.
+4. The Windows job waits for the `release` environment's reviewer approval, so a release is
+   one click rather than fully unattended.
+
+Channels, and what arms each:
+
+- **Homebrew** (`curtisgalloway/homebrew-tap`, `Formula/qbranch.rb`): a binary formula that
+  points at the macOS tarballs, one URL and sha per architecture; no bottle and no source
+  build, since `cargo install` covers anyone who wants one. The tap's
+  `bump-qbranch-formula.yml` rewrites the version line and both URL/sha pairs on a
+  `qbranch-release` dispatch, which needs `HOMEBREW_TAP_DISPATCH_TOKEN` (a fine-grained PAT
+  with Contents:write on the tap) in this repo. Without it the release warns and the tap's
+  workflow is run by hand.
+- **.deb**: `packaging/nfpm.yaml`, amd64 and arm64, no dependencies. The skills ship as a
+  tree, so a new skill needs no edit there.
+- **MSI**: `packaging/windows/`. Per-user under `%LOCALAPPDATA%\Programs\qbranch`, `bin` on
+  the user PATH, MajorUpgrade in place. The UpgradeCode and component GUIDs in `Package.wxs`
+  are permanent identity: never regenerate them. A new skill needs a directory and a
+  component there plus an entry in `build.ps1`'s known list, which is what makes the build
+  refuse to leave one out. Signing is Azure Artifact Signing over OIDC, as in oxbox: a
+  `release` environment with a reviewer rule, secrets `AZURE_CLIENT_ID` and
+  `AZURE_TENANT_ID`, variables `AZURE_SIGNING_ENDPOINT`, `AZURE_SIGNING_ACCOUNT` and
+  `AZURE_SIGNING_PROFILE`, and an Entra federated credential whose subject is
+  `repo:curtisgalloway/qbranch:environment:release`. Until the account variable is set the
+  MSI ships unsigned; the verify step is what keeps that visible. winget comes later: the
+  first submission is a manual `wingetcreate new` with `Scope: user`, after which a gated job
+  can update it on each release.
+- **crates.io**: the crate holds `src/`, the manifests, `LICENSE`, `README.md` and
+  `GLOSSARY.md` (`include` in `Cargo.toml`); the reference script and the corpus, whose
+  fixtures hold deliberately dangling symlinks, stay out. The first publish is by hand
+  (`cargo publish` with a token), because only an existing crate can declare a trusted
+  publisher; then declare this repo's `release.yml` as the trusted publisher on crates.io and
+  set the repository variable `CRATES_PUBLISH=true`. `[package.metadata.binstall]` tells
+  `cargo binstall` where the archives are and must agree with the names `release.yml` makes.
+- **Tarballs and the zip**: one top-level directory holding `qbranch`, `LICENSE`, `README.md`
+  and `skills/`.
+
+Every channel installs the same bin-beside-share layout, with the two skills under
+`share/qbranch/skills`, so they are in a predictable place on any of them.
 
 ## Working here
 

@@ -1,0 +1,47 @@
+# SPDX-FileCopyrightText: 2026 Curtis Galloway
+# SPDX-License-Identifier: Apache-2.0
+
+# nfpm manifest for the Linux .deb, built by .github/workflows/release.yml
+# from the musl binary of the matching architecture. VERSION and ARCH are
+# injected by the workflow as environment variables.
+#
+# The binary is fully static, so the package depends on nothing. git is
+# recommended, not required: a manifest's repo-based skill entries are
+# cloned with it, and a manifest without any works without it.
+#
+# Layout: the executable on PATH and the tool's own two skills under
+# /usr/share/qbranch/skills. That is the same bin-beside-share prefix the
+# tarball, the Homebrew formula and the Windows MSI install, so a manifest
+# can point at the packaged skills the same way on every channel.
+
+name: qbranch
+arch: ${ARCH}
+version: ${VERSION}
+platform: linux
+section: utils
+priority: optional
+maintainer: Curtis Galloway <4055365+curtisgalloway@users.noreply.github.com>
+homepage: https://github.com/curtisgalloway/qbranch
+license: Apache-2.0
+description: |
+  Outfits a machine's coding agents from a per-machine manifest.
+  Links the skills, instruction files and hooks a manifest names into
+  the agent-neutral skills directory, merges settings fragments into
+  each harness's own settings file, and installs the Claude Code
+  plugins the fragments declare, keeping every machine you use in step.
+recommends:
+  - git
+contents:
+  - src: packaging/stage/qbranch
+    dst: /usr/bin/qbranch
+    file_info:
+      mode: 0o755
+  # The whole skills tree, so a new skill needs no entry here (unlike the
+  # MSI, whose Package.wxs lists each file).
+  - src: skills
+    dst: /usr/share/qbranch/skills
+    type: tree
+  - src: LICENSE
+    dst: /usr/share/doc/qbranch/LICENSE
+  - src: README.md
+    dst: /usr/share/doc/qbranch/README.md

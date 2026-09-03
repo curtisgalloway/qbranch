@@ -43,13 +43,36 @@ Every step is planned first; `--dry-run` shows the plan and changes nothing.
 
 ## Installing
 
-Download the binary for your platform from the
-[releases page](https://github.com/curtisgalloway/qbranch/releases) and put it on your `PATH`,
-or build it with a Rust toolchain:
+**macOS**, with Homebrew. The tap carries prebuilt binaries for Apple Silicon and Intel:
 
 ```bash
-cargo install --git https://github.com/curtisgalloway/qbranch
+brew install curtisgalloway/tap/qbranch
 ```
+
+**Debian, Ubuntu and Raspberry Pi OS.** The `.deb` on the
+[releases page](https://github.com/curtisgalloway/qbranch/releases) is fully static and
+depends on nothing:
+
+```bash
+sudo apt install ./qbranch_<version>_amd64.deb      # or _arm64
+```
+
+**Windows.** The signed per-user MSI on the releases page installs under
+`%LOCALAPPDATA%\Programs\qbranch`, puts it on your `PATH` and needs no elevation. A winget
+package is planned.
+
+```powershell
+msiexec /i qbranch-v<version>-x86_64-pc-windows-msvc.msi /qn
+```
+
+**With a Rust toolchain.** `cargo install qbranch`, or `cargo binstall qbranch` for the
+prebuilt binary.
+
+**Anything else.** Every release carries a tarball or zip per platform, listed in its
+`SHA256SUMS`. Unpack it and put `qbranch` on your `PATH`.
+
+Each package also carries the tool's own two skills under `share/qbranch/skills`, beside
+`bin`, so they are on hand without a source checkout.
 
 Then point it at your config root once:
 
