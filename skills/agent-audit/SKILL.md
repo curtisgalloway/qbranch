@@ -5,7 +5,8 @@ description: Run an overall health review of this machine's agent setup — link
 
 # Audit the agent setup
 
-The sync tool `qbranch` (on PATH, or `~/src/qbranch/bin/qbranch`) can inventory everything it knows about on this machine and flag what needs a human decision.
+The sync tool `qbranch` (on PATH, or `~/src/qbranch/bin/qbranch`; `qbranch --skill qbranch`
+explains the setup this skill assumes) can inventory everything it knows about on this machine and flag what needs a human decision.
 This skill runs that inventory and turns each finding into a structured question, then applies
 the answers through the tool's own flags and the `claude` CLI. Nothing is decided for the user.
 

@@ -111,7 +111,7 @@ qbranch --audit               # collisions, double loads, duplicate MCP servers,
 qbranch --add-skill <name> | git://<repo>/<path>    # add a skill to the remembered manifest
 qbranch --upgrade-manifests   # rewrite older manifests at the current schema
 qbranch --version
-qbranch --skill [NAME]        # a bundled skill's SKILL.md, verbatim; without NAME, list them
+qbranch --skill qbranch       # the operating guide for an agent; --skill alone lists the skills
 ```
 
 ## The config root
@@ -159,11 +159,13 @@ document every key.
 
 ## Skills that ship with it
 
-`skills/review-plugins` walks the plugins a machine has installed but no fragment manages,
-deciding each one's fate with structured questions. `skills/agent-audit` runs the overall audit
-and walks its findings the same way. List this checkout as a skill repo in a manifest to link
-them. `qbranch --skill` lists them and `qbranch --skill <name>` prints one verbatim, so an agent
-that finds qbranch on its PATH can read how to drive it without a checkout; every package also
+`skills/qbranch` is the operating guide for an agent: what a sync touches, the config root,
+every manifest key, the first sync and the everyday commands. `skills/review-plugins` walks the
+plugins a machine has installed but no fragment manages, deciding each one's fate with
+structured questions. `skills/agent-audit` runs the overall audit and walks its findings the
+same way. List this checkout as a skill repo in a manifest to link them. `qbranch --skill`
+lists them and `qbranch --skill qbranch` prints the guide verbatim, so an agent that finds
+qbranch on its PATH can read how to drive it before any manifest exists; every package also
 carries the same files under `share/qbranch/skills`.
 
 ## Tests

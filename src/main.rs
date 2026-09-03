@@ -96,9 +96,8 @@ struct Cli {
     version: bool,
 
     /// Print bundled skill NAME (its SKILL.md, verbatim) and exit; without
-    /// NAME, list the bundled skills. These are the tool's own skills,
-    /// review-plugins and agent-audit, so an agent that finds qbranch on
-    /// PATH can read how to drive it.
+    /// NAME, list the bundled skills. Start with 'qbranch', the guide to
+    /// operating the tool; review-plugins and agent-audit are the others.
     #[arg(long, value_name = "NAME", num_args = 0..=1, default_missing_value = "")]
     skill: Option<String>,
 

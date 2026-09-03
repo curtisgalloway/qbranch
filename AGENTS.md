@@ -25,8 +25,9 @@ tests/run_parity.py    applies every case for real with both implementations and
                        results, plus the --plugin-status / --audit / --list output
 tests/fake-bin/claude  stand-in for the claude CLI, driven by a case's claude.json
 tests/corpus/<case>/   fixture root + home + expected plan; see run_corpus.py's docstring
-skills/                the tool's own skills: review-plugins, agent-audit. `--skill` prints
-                       them; the script reads this directory, the port embeds it (ctx.rs)
+skills/                the tool's own skills: qbranch (the operating guide), review-plugins,
+                       agent-audit. `--skill` prints them; the script reads this directory,
+                       the port embeds it (ctx.rs)
 packaging/nfpm.yaml    the Linux .deb (nfpm), built by release.yml from the musl binary
 packaging/windows/     the per-user MSI: Package.wxs (WiX v7) and build.ps1, which stages the
                        payload and refuses to build when skills/ holds one the wxs lacks
@@ -81,6 +82,12 @@ HANDOFF.md             session handoff, untracked; read it first when it exists
   migrates from its own released layouts, not from its prehistory.
 - **Gloss borrowed vocabulary.** Every document opens with a Terms block for the handful of
   terms it leans on and points at `GLOSSARY.md`; a new term goes into the glossary first.
+- **The qbranch skill is the agent-facing manual.** `skills/qbranch/SKILL.md` is what an
+  agent reads through `qbranch --skill qbranch` on a machine with only the binary. A change
+  to the CLI, a manifest key, path resolution or the first-sync flow lands there in the same
+  commit, the way a behaviour change lands in both implementations. The bootstrap work
+  (`--root` taking a URL, `--init`, a repo form for `skill_repos`) rewrites its First sync
+  section when it arrives.
 - **Headers.** Executable files carry the two-line SPDX header; Markdown carries none. `LICENSE`
   is Apache 2.0.
 

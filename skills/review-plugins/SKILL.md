@@ -5,7 +5,8 @@ description: Triage the Claude Code plugins installed on this machine that no se
 
 # Review unmanaged plugins
 
-The sync tool `qbranch` (on PATH, or `~/src/qbranch/bin/qbranch`) makes Claude Code plugins follow the user between machines when a
+The sync tool `qbranch` (on PATH, or `~/src/qbranch/bin/qbranch`; `qbranch --skill qbranch`
+explains the setup this skill assumes) makes Claude Code plugins follow the user between machines when a
 settings fragment declares them. A plugin installed here but declared nowhere is
 **unmanaged**: it stays local, and the sync only reports it. This skill turns that report
 into decisions, one structured question per plugin, and applies them through the tool's

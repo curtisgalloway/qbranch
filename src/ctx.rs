@@ -28,11 +28,12 @@ pub const OFFICIAL_MARKETPLACE: &str = "claude-plugins-official";
 /// without a checkout. Sorted by name, one row per directory under skills/;
 /// the parity run's --skill modes hold this to the reference script's
 /// directory listing, so a missing row fails there.
-pub const BUNDLED_SKILLS: [(&str, &str); 2] = [
+pub const BUNDLED_SKILLS: [(&str, &str); 3] = [
     (
         "agent-audit",
         include_str!("../skills/agent-audit/SKILL.md"),
     ),
+    ("qbranch", include_str!("../skills/qbranch/SKILL.md")),
     (
         "review-plugins",
         include_str!("../skills/review-plugins/SKILL.md"),

@@ -42,7 +42,7 @@ if ($Version -match '^\d+\.\d+\.\d+$') {
 # to build when the checkout has a skill the package would silently leave
 # out, or lists one the checkout no longer has. Keep this list and the
 # components in Package.wxs in step.
-$KnownSkills = @("review-plugins", "agent-audit")
+$KnownSkills = @("qbranch", "review-plugins", "agent-audit")
 $Skills = Get-ChildItem (Join-Path $Repo "skills") -Directory | Select-Object -ExpandProperty Name
 $missing = @($Skills | Where-Object { $KnownSkills -notcontains $_ })
 if ($missing.Count -gt 0) {

@@ -54,6 +54,7 @@ Design notes, the same ones as oxbox's Package.wxs, which this follows:
           <Directory Id="ShareDir" Name="share">
             <Directory Id="ShareQbranchDir" Name="qbranch">
               <Directory Id="SkillsDir" Name="skills">
+                <Directory Id="SkillQbranchDir" Name="qbranch" />
                 <Directory Id="SkillReviewPluginsDir" Name="review-plugins" />
                 <Directory Id="SkillAgentAuditDir" Name="agent-audit" />
               </Directory>
@@ -79,9 +80,15 @@ Design notes, the same ones as oxbox's Package.wxs, which this follows:
         <RemoveFolder Id="rmProgramsDir" Directory="ProgramsDir" On="uninstall" />
       </Component>
 
-      <!-- The tool's own skills. The binary never reads them; a manifest
-           links them, and a packaged install with no checkout has no other
-           source for them. -->
+      <!-- The tool's own skills, the same text the skill flag prints from
+           the binary; installed as files so a manifest can link them. -->
+      <Component Id="cmpSkillQbranch" Directory="SkillQbranchDir" Guid="2CEA67DB-0823-4BF2-853F-7A14D40DF387">
+        <File Id="filSkillQbranch" Name="SKILL.md" Source="$(var.StageDir)\share\qbranch\skills\qbranch\SKILL.md" />
+        <RegistryValue Root="HKCU" Key="Software\qbranch\msi" Name="skill-qbranch"
+                       Value="1" Type="integer" KeyPath="yes" />
+        <RemoveFolder Id="rmSkillQbranchDir" Directory="SkillQbranchDir" On="uninstall" />
+      </Component>
+
       <Component Id="cmpSkillReviewPlugins" Directory="SkillReviewPluginsDir" Guid="BF30B7AF-5465-40A4-9CE1-41848E46A9C3">
         <File Id="filSkillReviewPlugins" Name="SKILL.md" Source="$(var.StageDir)\share\qbranch\skills\review-plugins\SKILL.md" />
         <RegistryValue Root="HKCU" Key="Software\qbranch\msi" Name="skill-review-plugins"

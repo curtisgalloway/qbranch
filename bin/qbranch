@@ -1585,10 +1585,9 @@ def main() -> int:
                             f"{MANIFEST_SCHEMA})")
     ap.add_argument("--skill", nargs="?", const="", metavar="NAME",
                     help="Print bundled skill NAME (its SKILL.md, verbatim) and "
-                         "exit; without NAME, list the bundled skills. These "
-                         "are the tool's own skills, review-plugins and "
-                         "agent-audit, so an agent that finds qbranch on PATH "
-                         "can read how to drive it.")
+                         "exit; without NAME, list the bundled skills. Start "
+                         "with 'qbranch', the guide to operating the tool; "
+                         "review-plugins and agent-audit are the others.")
     ap.add_argument("--upgrade-manifests", action="store_true",
                     help="Rewrite every manifest under manifests/ at the "
                          "current schema and exit. Older manifests work "
