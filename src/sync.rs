@@ -352,7 +352,11 @@ pub fn run(ctx: &mut Ctx, args: &SyncArgs) -> i32 {
 
     let create: &'static str = if copying { "copy" } else { "link" };
     for d in &desired {
-        if !d.src.exists() && !(args.dry_run && d.src == skills_target) {
+        // A dry run has not created the skills target yet, so a harness link
+        // pointing at it is not a missing source.
+        let source_missing = !d.src.exists();
+        let target_only_planned = args.dry_run && d.src == skills_target;
+        if source_missing && !target_only_planned {
             // A MISS never reaches `final`, so its dst never lands in the
             // state file; the stale-removal pass above (which walks
             // previous_dsts) can therefore never reclaim a symlink left
