@@ -21,7 +21,7 @@ mod sync;
 mod util;
 
 use clap::{CommandFactory, FromArgMatches, Parser};
-use ctx::{Ctx, MANIFEST_SCHEMA, STATE_FILE_NAME, VERSION};
+use ctx::{Ctx, BUNDLED_SKILLS, MANIFEST_SCHEMA, STATE_FILE_NAME, VERSION};
 use serde_json::{json, Value as Json};
 use util::{die, display, JMap};
 
@@ -95,6 +95,13 @@ struct Cli {
     #[arg(short = 'V', long)]
     version: bool,
 
+    /// Print bundled skill NAME (its SKILL.md, verbatim) and exit; without
+    /// NAME, list the bundled skills. These are the tool's own skills,
+    /// review-plugins and agent-audit, so an agent that finds qbranch on
+    /// PATH can read how to drive it.
+    #[arg(long, value_name = "NAME", num_args = 0..=1, default_missing_value = "")]
+    skill: Option<String>,
+
     /// Rewrite every manifest under manifests/ at the current schema and
     /// exit. Older manifests work without this (they are upgraded in
     /// memory); a manifest newer than this tool is refused.
@@ -139,6 +146,29 @@ fn print_errors(fails: &[String]) {
     }
 }
 
+/// --skill: list the bundled skills, or print one's SKILL.md verbatim.
+fn print_skill(name: &str) -> i32 {
+    if name.is_empty() {
+        for (n, _) in BUNDLED_SKILLS {
+            println!("{n}");
+        }
+        return 0;
+    }
+    match BUNDLED_SKILLS.iter().find(|(n, _)| *n == name) {
+        Some((_, text)) => {
+            print!("{text}");
+            0
+        }
+        None => {
+            let names: Vec<&str> = BUNDLED_SKILLS.iter().map(|(n, _)| *n).collect();
+            die(format!(
+                "no bundled skill '{name}'; available: {}",
+                names.join(", ")
+            ))
+        }
+    }
+}
+
 fn main() {
     std::process::exit(run());
 }
@@ -149,6 +179,9 @@ fn run() -> i32 {
     if args.version {
         println!("qbranch {VERSION} (manifest schema {MANIFEST_SCHEMA})");
         return 0;
+    }
+    if let Some(name) = &args.skill {
+        return print_skill(name);
     }
 
     let mut ctx = Ctx::from_env();

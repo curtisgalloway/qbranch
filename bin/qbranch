@@ -185,6 +185,9 @@ VERSION = "0.3.0"
 # than MANIFEST_SCHEMA is refused, so the upgrade path is forward-only.
 MANIFEST_SCHEMA = 2
 STATE_SCHEMA = 2
+# The tool's own skills, beside this script in a checkout. --skill prints
+# them; the Rust port embeds the same files at build time.
+BUNDLED_SKILLS_DIR = Path(__file__).resolve().parent.parent / "skills"
 SKILL_REPOS_CACHE = Path.home() / ".agents" / "skill-repos"
 # How a manifest entry is materialised: a symbolic link, or a copy that is
 # refreshed on every sync. `auto` is symlink, falling back to copy on Windows
@@ -387,6 +390,28 @@ def upgrade_manifests() -> int:
 def list_manifests() -> list[str]:
     d = REPO / "manifests"
     return sorted(p.stem for p in d.glob("*.json")) if d.is_dir() else []
+
+
+def bundled_skills() -> list[str]:
+    """Names of the skills that ship with the tool, sorted."""
+    d = BUNDLED_SKILLS_DIR
+    if not d.is_dir():
+        return []
+    return sorted(p.name for p in d.iterdir() if (p / "SKILL.md").is_file())
+
+
+def print_skill(name: str) -> int:
+    """--skill: list the bundled skills, or print one's SKILL.md verbatim."""
+    names = bundled_skills()
+    if not name:
+        for n in names:
+            print(n)
+        return 0
+    if name not in names:
+        sys.exit(f"no bundled skill '{name}'; available: {', '.join(names)}")
+    text = (BUNDLED_SKILLS_DIR / name / "SKILL.md").read_text(encoding="utf-8")
+    print(text, end="")
+    return 0
 
 
 def empty_state() -> dict:
@@ -1558,6 +1583,12 @@ def main() -> int:
     ap.add_argument("--version", action="version",
                     version=f"qbranch {VERSION} (manifest schema "
                             f"{MANIFEST_SCHEMA})")
+    ap.add_argument("--skill", nargs="?", const="", metavar="NAME",
+                    help="Print bundled skill NAME (its SKILL.md, verbatim) and "
+                         "exit; without NAME, list the bundled skills. These "
+                         "are the tool's own skills, review-plugins and "
+                         "agent-audit, so an agent that finds qbranch on PATH "
+                         "can read how to drive it.")
     ap.add_argument("--upgrade-manifests", action="store_true",
                     help="Rewrite every manifest under manifests/ at the "
                          "current schema and exit. Older manifests work "
@@ -1587,6 +1618,9 @@ def main() -> int:
                          "plugin wherever the fragment applies; false pins it "
                          "disabled there. Default: true.")
     args = ap.parse_args()
+
+    if args.skill is not None:
+        return print_skill(args.skill)
 
     skills_target = Path(args.skills_target).expanduser()
     state_path = skills_target / STATE_FILE_NAME

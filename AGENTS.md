@@ -25,7 +25,8 @@ tests/run_parity.py    applies every case for real with both implementations and
                        results, plus the --plugin-status / --audit / --list output
 tests/fake-bin/claude  stand-in for the claude CLI, driven by a case's claude.json
 tests/corpus/<case>/   fixture root + home + expected plan; see run_corpus.py's docstring
-skills/                the tool's own skills: review-plugins, agent-audit
+skills/                the tool's own skills: review-plugins, agent-audit. `--skill` prints
+                       them; the script reads this directory, the port embeds it (ctx.rs)
 packaging/nfpm.yaml    the Linux .deb (nfpm), built by release.yml from the musl binary
 packaging/windows/     the per-user MSI: Package.wxs (WiX v7) and build.ps1, which stages the
                        payload and refuses to build when skills/ holds one the wxs lacks
@@ -128,7 +129,8 @@ Channels, and what arms each:
   the user PATH, MajorUpgrade in place. The UpgradeCode and component GUIDs in `Package.wxs`
   are permanent identity: never regenerate them. A new skill needs a directory and a
   component there plus an entry in `build.ps1`'s known list, which is what makes the build
-  refuse to leave one out. Signing is Azure Artifact Signing over OIDC, as in oxbox: a
+  refuse to leave one out, and a row in `BUNDLED_SKILLS` in `src/ctx.rs` so `--skill` prints
+  it; the parity run's `--skill` modes catch a missing row. Signing is Azure Artifact Signing over OIDC, as in oxbox: a
   `release` environment with a reviewer rule, secrets `AZURE_CLIENT_ID` and
   `AZURE_TENANT_ID`, variables `AZURE_SIGNING_ENDPOINT`, `AZURE_SIGNING_ACCOUNT` and
   `AZURE_SIGNING_PROFILE`, and an Entra federated credential whose subject is

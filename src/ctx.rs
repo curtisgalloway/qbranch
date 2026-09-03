@@ -24,6 +24,20 @@ pub const COPY_IGNORE: [&str; 2] = [STATE_FILE_NAME, LEGACY_STATE_FILE_NAME];
 /// `claude plugin` CLI does not: on a fresh config dir it must be added like
 /// any other before an official plugin can be installed.
 pub const OFFICIAL_MARKETPLACE: &str = "claude-plugins-official";
+/// The tool's own skills, embedded so `--skill` works from any install
+/// without a checkout. Sorted by name, one row per directory under skills/;
+/// the parity run's --skill modes hold this to the reference script's
+/// directory listing, so a missing row fails there.
+pub const BUNDLED_SKILLS: [(&str, &str); 2] = [
+    (
+        "agent-audit",
+        include_str!("../skills/agent-audit/SKILL.md"),
+    ),
+    (
+        "review-plugins",
+        include_str!("../skills/review-plugins/SKILL.md"),
+    ),
+];
 
 pub fn official_marketplace_source() -> Json {
     json!({"source": {"source": "github", "repo": "anthropics/claude-plugins-official"}})

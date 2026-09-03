@@ -8,11 +8,13 @@ repository = "https://github.com/curtisgalloway/qbranch"
 readme = "README.md"
 keywords = ["claude-code", "agents", "skills", "dotfiles"]
 categories = ["command-line-utilities"]
-# The crate is the Rust port and its docs. The reference script and the test
-# corpus stay out: the corpus fixtures hold deliberately dangling symlinks,
-# and nothing that `cargo install` builds needs either.
+# The crate is the Rust port, its docs and the two skills it embeds for
+# --skill. The reference script and the test corpus stay out: the corpus
+# fixtures hold deliberately dangling symlinks, and nothing that
+# `cargo install` builds needs either.
 include = [
     "/src",
+    "/skills",
     "/Cargo.toml",
     "/Cargo.lock",
     "/LICENSE",

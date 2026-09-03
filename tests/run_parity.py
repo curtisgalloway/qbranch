@@ -9,7 +9,8 @@ and everything they leave behind is diffed (exit code, stdout, stderr, every
 symlink target, every file, every JSON document with the state file's
 timestamp masked). The report modes that have no corpus expectation are
 diffed the same way: --plugin-status and --audit in text and --json form,
-and --list.
+--list, and --skill (the listing, one skill, and an unknown name), which is
+what holds the port's embedded skills to the reference's skills/ directory.
 
   python3 tests/run_parity.py                      after cargo build --release
   python3 tests/run_parity.py --bin path/to/qbranch
@@ -32,6 +33,9 @@ REPORT_MODES = (
     ["--plugin-status"],
     ["--audit"],
     ["--list"],
+    ["--skill"],
+    ["--skill", "agent-audit"],
+    ["--skill", "no-such-skill"],
 )
 
 

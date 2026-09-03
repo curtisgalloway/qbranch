@@ -153,6 +153,10 @@ jobs:
             echo "::error::installed qbranch reports '${reported}', Cargo.toml says ${crate}"
             exit 1
           fi
+          # --skill prints the same bytes the package installs, so an agent
+          # can read the skills without knowing where the package put them.
+          /usr/bin/qbranch --skill | grep -qx review-plugins
+          /usr/bin/qbranch --skill review-plugins | diff - /usr/share/qbranch/skills/review-plugins/SKILL.md
           scratch=$(mktemp -d)
           mkdir -p "$scratch/root/manifests"
           echo '{"schema": 2, "name": "smoke"}' > "$scratch/root/manifests/smoke.json"
@@ -327,6 +331,10 @@ jobs:
           if (($reported -split ' ')[1] -ne $crate) {
             throw "installed qbranch reports '$reported', Cargo.toml says $crate"
           }
+          $listed = & "$prefix\bin\qbranch.exe" --skill
+          if ($listed -notcontains 'review-plugins') { throw "--skill did not list review-plugins (got: $listed)" }
+          $text = (& "$prefix\bin\qbranch.exe" --skill review-plugins) -join "`n"
+          if ($text -notmatch '(?m)^name: review-plugins') { throw "--skill review-plugins did not print the skill" }
 
           $scratch = Join-Path $env:RUNNER_TEMP "smoke"
           New-Item -ItemType Directory -Force "$scratch\root\manifests" | Out-Null
