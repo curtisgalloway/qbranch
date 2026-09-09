@@ -14,6 +14,7 @@ mod manifest;
 mod paths;
 mod plugins;
 mod proc;
+mod rename;
 mod settings;
 mod skills;
 mod state;
