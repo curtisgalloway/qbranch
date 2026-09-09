@@ -1,0 +1,38 @@
+{
+  "tool": "0.3.0",
+  "schema": 2,
+  "manifest": "renamedrepo",
+  "dry_run": true,
+  "skills_target": "<CASE>/home/.agents/skills",
+  "link_mode": "symlink",
+  "claude": false,
+  "agy": false,
+  "desired": 2,
+  "actions": [
+    {
+      "op": "remove",
+      "label": "alpha",
+      "src": null,
+      "dst": "<CASE>/home/.agents/skills/alpha",
+      "note": "-> ../../src/skillrepo/skills/alpha (renamed to alpha-renamed in <SHA>)"
+    },
+    {
+      "op": "link",
+      "label": "alpha-renamed",
+      "src": "<CASE>/home/src/skillrepo/skills/alpha-renamed",
+      "dst": "<CASE>/home/.agents/skills/alpha-renamed",
+      "note": "was alpha"
+    },
+    {
+      "op": "ok",
+      "label": "beta",
+      "src": "<CASE>/home/src/skillrepo/skills/beta",
+      "dst": "<CASE>/home/.agents/skills/beta",
+      "note": ""
+    }
+  ],
+  "plugin_actions": [],
+  "unlinked_repo_skills": [],
+  "messages": [],
+  "failures": []
+}

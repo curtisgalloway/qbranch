@@ -1,0 +1,8 @@
+{
+  "schema": 2,
+  "name": "renamedrepo",
+  "description": "corpus case renamed-repo-skill",
+  "skill_repos": [
+    { "path": "${HOME}/src/skillrepo" }
+  ]
+}

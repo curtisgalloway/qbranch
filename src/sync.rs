@@ -187,6 +187,49 @@ fn link(src: &Path, dst: &Path) -> io::Result<()> {
     paths::symlink(src, dst)
 }
 
+/// Where a stale link's target went, when it moved inside its repo.
+///
+/// Discovery through `skill_repos` names a skill by its directory, so a rename
+/// there raises no error at all: the old link is simply dropped and a
+/// differently named one appears, with nothing connecting the two. Saying so on
+/// both plan lines is the only notice that rename ever gets -- and the name is
+/// what the skill is invoked by, so a silent change to it matters.
+///
+/// `None` unless the destination is something this sync is actually linking,
+/// which is what separates a rename from an unrelated removal.
+fn stale_link_rename(
+    dst: &Path,
+    raw: Option<&Path>,
+    desired_srcs: &HashSet<PathBuf>,
+) -> Option<(PathBuf, String, String)> {
+    let raw = raw?;
+    // A link's stored target may be relative and may carry `..`, so both sides
+    // of every comparison below go through resolve(): a lexically different
+    // spelling of the same directory would silently look like a different one.
+    let target = paths::resolve(&if raw.is_absolute() {
+        raw.to_path_buf()
+    } else {
+        paths::parent(dst).join(raw)
+    });
+    if target.exists() {
+        return None;
+    }
+    let root = rename::git_root(&target)?;
+    let rename::Verdict::Renamed {
+        new_rel,
+        new_name,
+        commit,
+    } = rename::diagnose(&target)
+    else {
+        return None;
+    };
+    let new_src = paths::resolve(&root.join(&new_rel));
+    if !desired_srcs.contains(&new_src) {
+        return None;
+    }
+    Some((new_src, new_name, commit))
+}
+
 pub fn run(ctx: &mut Ctx, args: &SyncArgs) -> i32 {
     let mut say = Say {
         json: args.json,
@@ -324,21 +367,31 @@ pub fn run(ctx: &mut Ctx, args: &SyncArgs) -> i32 {
         .map(|a| a.target.clone())
         .collect();
 
+    let desired_srcs: HashSet<PathBuf> = desired.iter().map(|d| paths::resolve(&d.src)).collect();
+    let mut renamed_from: BTreeMap<PathBuf, String> = BTreeMap::new();
+
     let mut actions: Vec<Action> = Vec::new();
     for dst in &previous_dsts {
         if desired_dsts.contains(dst) || managed.contains(dst) {
             continue;
         }
         if paths::is_symlink(dst) {
-            let target = paths::read_link(dst)
-                .map(|p| display(&p))
-                .unwrap_or_default();
+            let raw = paths::read_link(dst);
+            let target = raw.as_ref().map(|p| display(p)).unwrap_or_default();
+            let label = paths::name(dst);
+            let note = match stale_link_rename(dst, raw.as_deref(), &desired_srcs) {
+                Some((new_src, new_name, commit)) => {
+                    renamed_from.insert(new_src, label.clone());
+                    format!("-> {target} (renamed to {new_name} in {commit})")
+                }
+                None => format!("-> {target} (not in manifest)"),
+            };
             actions.push(Action {
                 op: "remove",
-                label: paths::name(dst),
+                label,
                 src: None,
                 dst: dst.clone(),
-                note: format!("-> {target} (not in manifest)"),
+                note,
             });
         } else if prev_copies.contains(dst) && dst.exists() {
             actions.push(Action {
@@ -430,7 +483,11 @@ pub fn run(ctx: &mut Ctx, args: &SyncArgs) -> i32 {
                 "non-symlink at destination — leaving alone".to_string(),
             ));
         } else {
-            actions.push(action(create, String::new()));
+            let note = match renamed_from.get(&paths::resolve(&d.src)) {
+                Some(old) => format!("was {old}"),
+                None => String::new(),
+            };
+            actions.push(action(create, note));
         }
     }
 

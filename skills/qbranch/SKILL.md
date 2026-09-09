@@ -152,8 +152,17 @@ directory must not have been split across several places, and at least half of w
 must have made the trip.
 
 A skill linked through `skill_repos` is found by scanning, not named in the manifest, so a
-rename there needs no fix — but it *does* silently change the name the skill is invoked by.
-Grep for the old name in hooks, settings fragments and slash commands when one moves.
+rename there never reaches this failure at all: the old link is simply dropped and a
+differently named one appears. Nothing needs fixing, but the name a skill is invoked by has
+changed, so the plan says which line goes with which:
+
+```
+remove  alpha          -> .../skills/alpha (renamed to alpha-renamed in 341461e)
+link    alpha-renamed  was alpha
+```
+
+Grep for the old name in hooks, settings fragments and slash commands when you see that —
+those keep referring to it by name, and nothing else will tell you they have gone stale.
 
 ## Rules of thumb
 
