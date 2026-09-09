@@ -1012,6 +1012,41 @@ def rename_hint(missing: Path, label: str, is_skill: bool) -> str:
     return ""
 
 
+def stale_link_rename(dst: Path, desired_srcs: set) -> tuple | None:
+    """Where a stale link's target went, when it moved inside its repo.
+
+    Discovery through skill_repos names a skill by its directory, so a rename
+    there raises no error at all: the old link is simply dropped and a
+    differently named one appears, with nothing connecting the two. Saying so
+    on both plan lines is the only notice that rename ever gets -- and the name
+    is what the skill is invoked by, so a silent change to it matters.
+
+    None unless the destination is something this sync is actually linking,
+    which is what separates a rename from an unrelated removal.
+    """
+    try:
+        raw = Path(os.readlink(dst))
+    except OSError:
+        return None
+    # A link's stored target may be relative and may carry "..", so both sides
+    # of every comparison below go through resolve(): a lexically different
+    # spelling of the same directory would silently look like a different one.
+    target = (raw if raw.is_absolute() else dst.parent / raw).resolve()
+    if target.exists():
+        return None
+    root = git_root(target)
+    if root is None:
+        return None
+    v = diagnose_missing(target)
+    if v[0] != "renamed":
+        return None
+    _, new_rel, new_name, commit = v
+    new_src = (root / new_rel).resolve()
+    if new_src not in desired_srcs:
+        return None
+    return (new_src, new_name, commit)
+
+
 def repo_rel(root: Path, p: Path) -> str | None:
     """The path of p relative to its git work tree, in git's own notation."""
     try:
@@ -2189,10 +2224,20 @@ def sync(args: argparse.Namespace, skills_target: Path, state_path: Path) -> int
 
     actions: list[tuple[str, str, Path | None, Path, str]] = []
 
+    desired_srcs = {src.resolve() for _, src, _ in desired}
+    renamed_from: dict[Path, str] = {}
+
     for dst in sorted(previous_dsts - desired_dsts - managed):
         if dst.is_symlink():
+            moved = stale_link_rename(dst, desired_srcs)
+            if moved is not None:
+                new_src, new_name, commit = moved
+                renamed_from[new_src] = dst.name
+                why = f"renamed to {new_name} in {commit}"
+            else:
+                why = "not in manifest"
             actions.append(("remove", dst.name, None, dst,
-                            f"-> {dst.readlink()} (not in manifest)"))
+                            f"-> {dst.readlink()} ({why})"))
         elif dst in previous_copies and dst.exists():
             actions.append(("remove", dst.name, None, dst, "copy (not in manifest)"))
 
@@ -2237,7 +2282,9 @@ def sync(args: argparse.Namespace, skills_target: Path, state_path: Path) -> int
             actions.append(("WARN", label, src, dst,
                             "non-symlink at destination — leaving alone"))
         else:
-            actions.append((create, label, src, dst, ""))
+            was = renamed_from.get(src.resolve())
+            actions.append((create, label, src, dst,
+                            f"was {was}" if was else ""))
 
     if not args.json:
         label_w = max(

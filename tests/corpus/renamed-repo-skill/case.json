@@ -1,0 +1,10 @@
+{
+  "manifest": "renamedrepo",
+  "git": [
+    ["home/src/skillrepo", ["init", "-q"]],
+    ["home/src/skillrepo", ["add", "skills/alpha", "skills/beta"]],
+    ["home/src/skillrepo", ["commit", "-qm", "base"]],
+    ["home/src/skillrepo", ["mv", "skills/alpha", "skills/alpha-renamed"]],
+    ["home/src/skillrepo", ["commit", "-qm", "rename alpha to alpha-renamed"]]
+  ]
+}

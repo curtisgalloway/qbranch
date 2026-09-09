@@ -1,0 +1,8 @@
+{
+  "schema": 2,
+  "manifest": "renamedrepo",
+  "links": [
+    "<CASE>/home/.agents/skills/alpha",
+    "<CASE>/home/.agents/skills/beta"
+  ]
+}
