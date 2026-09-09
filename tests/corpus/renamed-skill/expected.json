@@ -1,0 +1,45 @@
+{
+  "tool": "0.3.0",
+  "schema": 2,
+  "manifest": "renamed",
+  "dry_run": true,
+  "skills_target": "<CASE>/home/.agents/skills",
+  "link_mode": "symlink",
+  "claude": false,
+  "agy": false,
+  "desired": 4,
+  "actions": [
+    {
+      "op": "MISS",
+      "label": "alpha",
+      "src": "<CASE>/home/src/testrepo/skills/alpha",
+      "dst": "<CASE>/home/.agents/skills/alpha",
+      "note": "source missing \u2014 renamed to alpha-renamed in <SHA>; fix: qbranch --fix-renames"
+    },
+    {
+      "op": "MISS",
+      "label": "beta",
+      "src": "<CASE>/home/src/testrepo/skills/beta",
+      "dst": "<CASE>/home/.agents/skills/beta",
+      "note": "source missing \u2014 deleted in <SHA>; fix: qbranch --remove-skill beta"
+    },
+    {
+      "op": "MISS",
+      "label": "onbranch",
+      "src": "<CASE>/home/src/testrepo/skills/onbranch",
+      "dst": "<CASE>/home/.agents/skills/onbranch",
+      "note": "source missing \u2014 not on this branch; present on feature"
+    },
+    {
+      "op": "MISS",
+      "label": "ghost",
+      "src": "<CASE>/home/src/testrepo/skills/ghost",
+      "dst": "<CASE>/home/.agents/skills/ghost",
+      "note": "source missing"
+    }
+  ],
+  "plugin_actions": [],
+  "unlinked_repo_skills": [],
+  "messages": [],
+  "failures": []
+}

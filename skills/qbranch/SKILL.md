@@ -117,6 +117,8 @@ qbranch --list                   manifests in the config root
 qbranch --add-skill NAME         add a skill to the remembered manifest; --all for every manifest
 qbranch --add-skill git://REPO/skills/NAME   the same as a repo entry, from a local checkout
 qbranch --remove-skill NAME
+qbranch --fix-renames            repoint entries whose skill directory moved in its
+                                 repo; --all for every manifest
 qbranch --plugin-status [--json] managed / unmanaged / no-longer-managed plugins here
 qbranch --manage-plugin ID --in base|host [--value false]   declare a plugin in a fragment
 qbranch --audit [--json]         collisions, double loads, duplicate MCP servers, context budget
@@ -126,6 +128,32 @@ qbranch --skill [NAME]           this skill and its siblings, review-plugins and
 
 Every editing command changes the config root only. Run `qbranch` afterwards to apply, and
 commit the config root so other machines pick the change up on their next sync.
+
+## When a sync says a source is missing
+
+`source missing` means a `skills` entry points at a directory that is not there, and the
+sync fails until the manifest is put right. The message says which of four things happened,
+because the fixes are opposite:
+
+- **renamed to X in `<commit>`** — the directory moved in its repo. `qbranch --fix-renames`
+  rewrites the entry (and its name, when the name tracked the directory); add `--all` to
+  sweep every manifest. The trail is followed through repeated moves, so a skill that was
+  renamed and then swept into a plugin folder still resolves.
+- **deleted in `<commit>`** — the skill is gone. The suggested `--remove-skill` is *not*
+  applied automatically: a deleted skill may be one you want restored, and dropping entries
+  across every manifest is hard to notice afterwards.
+- **not on this branch; present on `<ref>`** — the checkout is on the wrong branch, or the
+  work is unmerged. Change nothing in the manifest.
+- no explanation — the path never existed in that history, or the repo is not cloned yet.
+  Usually a typo in the entry.
+
+Only a confident rename is ever rewritten: the destination has to exist on disk, the
+directory must not have been split across several places, and at least half of what it held
+must have made the trip.
+
+A skill linked through `skill_repos` is found by scanning, not named in the manifest, so a
+rename there needs no fix — but it *does* silently change the name the skill is invoked by.
+Grep for the old name in hooks, settings fragments and slash commands when one moves.
 
 ## Rules of thumb
 

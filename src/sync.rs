@@ -10,6 +10,7 @@ use crate::manifest::{load_manifest, manifest_skill_srcs};
 use crate::paths;
 use crate::plugins::{plan_claude_plugins, run_plugin_action, PluginAction};
 use crate::proc;
+use crate::rename;
 use crate::settings::sync_settings;
 use crate::skills::{collect_desired, collect_repo_skills, unlinked_repo_skill_dirs};
 use crate::state::{
@@ -363,17 +364,19 @@ pub fn run(ctx: &mut Ctx, args: &SyncArgs) -> i32 {
             // here, and it would dangle forever. Clear it as part of the
             // failure instead. Only a symlink whose target is gone is
             // touched; a working link is left for the WARN/relink paths.
-            let note = if paths::is_symlink(&d.dst) && !d.dst.exists() {
+            let base = if paths::is_symlink(&d.dst) && !d.dst.exists() {
                 "source missing (will remove stale link)"
             } else {
                 "source missing"
             };
+            let is_skill = d.dst.parent() == Some(skills_target.as_path());
+            let note = format!("{base}{}", rename::hint(&d.src, &d.label, is_skill));
             actions.push(Action {
                 op: "MISS",
                 label: d.label.clone(),
                 src: Some(d.src.clone()),
                 dst: d.dst.clone(),
-                note: note.to_string(),
+                note,
             });
             continue;
         }
@@ -577,6 +580,8 @@ pub fn run(ctx: &mut Ctx, args: &SyncArgs) -> i32 {
                     }
                     msg.push_str(&format!(" (removed stale link at {})", display(&a.dst)));
                 }
+                let is_skill = a.dst.parent() == Some(args.skills_target.as_path());
+                msg.push_str(&rename::hint(&src, &a.label, is_skill));
                 fail(msg, &mut failures, &mut had_error);
                 Ok(())
             }

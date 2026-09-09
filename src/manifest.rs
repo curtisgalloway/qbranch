@@ -190,6 +190,76 @@ pub fn remove_skill_from_manifest(ctx: &Ctx, manifest_name: &str, skill_name: &s
     true
 }
 
+/// Follow renamed sources: repoint every `skills` entry in `manifest_name`
+/// whose directory has moved in its repo.
+///
+/// Only a confident rename is acted on (see `rename::pick_destination`); a
+/// deletion, a path held on another branch and an unreadable history all
+/// leave the entry alone, because the right answer for those is a decision,
+/// not a rewrite. Returns (old name, new name, new path) per entry changed.
+pub fn fix_renames_in_manifest(ctx: &Ctx, manifest_name: &str) -> Vec<(String, String, String)> {
+    let (p, mut manifest) = read_manifest_raw(ctx, manifest_name);
+    let mut skills = skills_of(&manifest);
+
+    let mut edits: Vec<(usize, String, String, String)> = Vec::new();
+    for (i, e) in skills.iter().enumerate() {
+        let Some(obj) = util::obj(Some(e)) else {
+            continue;
+        };
+        let Some(name) = util::string(obj.get("name")) else {
+            continue;
+        };
+        let name = name.to_string();
+        let src = crate::skills::resolve_skill_src(ctx, obj);
+        if src.exists() {
+            continue;
+        }
+        let crate::rename::Verdict::Renamed {
+            new_rel, new_name, ..
+        } = crate::rename::diagnose(&src)
+        else {
+            continue;
+        };
+        let Some(root) = crate::rename::git_root(&src) else {
+            continue;
+        };
+        let Some(old_rel) = crate::rename::repo_rel(&root, &src) else {
+            continue;
+        };
+        let old_path = util::py_get_str(obj, "path");
+        let Some(new_path) = crate::rename::rewrite_path(&old_path, &old_rel, &new_rel) else {
+            continue;
+        };
+        // The link in ~/.agents/skills/ is named from the entry, so a name
+        // that tracked the directory follows it. A name the user chose for
+        // themselves is theirs to keep.
+        let old_base = old_rel.rsplit('/').next().unwrap_or_default();
+        let entry_name = if name == old_base {
+            new_name
+        } else {
+            name.clone()
+        };
+        edits.push((i, name, entry_name, new_path));
+    }
+
+    if edits.is_empty() {
+        return Vec::new();
+    }
+    let mut changed = Vec::new();
+    for (i, old_name, new_name, new_path) in edits {
+        if let Some(obj) = skills[i].as_object_mut() {
+            obj.insert("name".to_string(), Json::String(new_name.clone()));
+            obj.insert("path".to_string(), Json::String(new_path.clone()));
+        }
+        changed.push((old_name, new_name, new_path));
+    }
+    manifest.insert("skills".to_string(), Json::Array(skills));
+    if let Err(e) = util::write_json(&p, &Json::Object(manifest)) {
+        die(format!("{}: {}", display(&p), e));
+    }
+    changed
+}
+
 /// Parse a git:// shorthand into (skill_name, repo_url, skill_path).
 ///
 /// Short form `git://<local-name>[/<path>]` (first segment has no dot) looks

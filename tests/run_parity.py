@@ -44,7 +44,10 @@ def tree(sb: Sandbox) -> dict:
     out = {}
     for p in sorted(Path(sb.dir).rglob("*")):
         rel = p.relative_to(sb.dir)
-        if rel.parts[0] == "bin" or "Library" in rel.parts:
+        # A repo's .git is setup state, not something either implementation
+        # writes, and its index embeds mtimes and inode numbers that two
+        # independently created sandboxes can never match.
+        if rel.parts[0] == "bin" or "Library" in rel.parts or ".git" in rel.parts:
             continue
         key = sb.norm(str(rel))
         if p.is_symlink():
