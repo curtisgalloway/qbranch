@@ -142,8 +142,19 @@ def install_fake_claude(bin_dir: Path) -> None:
 def system_path() -> list[str]:
     """The minimum PATH the tool needs besides the case's own bin/."""
     if WINDOWS:
-        return [os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32")]
-    return ["/usr/bin", "/bin"]
+        base = [os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32")]
+    else:
+        base = ["/usr/bin", "/bin"]
+    # A case with real history needs git, and the tool shells out to it to work
+    # out why a source went missing. On Unix /usr/bin usually carries it; the
+    # Windows system directory never does, and git may sit outside /usr/bin on
+    # a Mac too. Appended, so a case's own bin/ still wins.
+    git = shutil.which("git")
+    if git:
+        d = os.path.dirname(git)
+        if d not in base:
+            base.append(d)
+    return base
 
 
 GIT_SETUP_ENV = {
