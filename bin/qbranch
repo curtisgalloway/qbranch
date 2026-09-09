@@ -808,8 +808,13 @@ def git_root(p: Path) -> Path | None:
 
 def git_out(root: Path, *rest: str) -> str | None:
     """Run git in root, returning stdout, or None when it fails."""
-    r = subprocess.run(["git", "-C", str(root), *rest],
-                       capture_output=True, text=True)
+    try:
+        r = subprocess.run(["git", "-C", str(root), *rest],
+                           capture_output=True, text=True)
+    except OSError:
+        # No git on PATH: the diagnosis is simply unavailable, the way it is
+        # for a path that is not in a work tree at all.
+        return None
     return r.stdout if r.returncode == 0 else None
 
 
