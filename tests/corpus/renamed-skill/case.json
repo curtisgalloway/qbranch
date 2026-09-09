@@ -1,0 +1,17 @@
+{
+  "manifest": "renamed",
+  "git": [
+    ["home/src/testrepo", ["init", "-q"]],
+    ["home/src/testrepo", ["add", "skills/alpha", "skills/beta"]],
+    ["home/src/testrepo", ["commit", "-qm", "base"]],
+    ["home/src/testrepo", ["mv", "skills/alpha", "skills/alpha-renamed"]],
+    ["home/src/testrepo", ["commit", "-qm", "rename alpha"]],
+    ["home/src/testrepo", ["rm", "-rq", "skills/beta"]],
+    ["home/src/testrepo", ["commit", "-qm", "delete beta"]],
+    ["home/src/testrepo", ["checkout", "-q", "-b", "feature"]],
+    ["home/src/testrepo", ["add", "skills/onbranch"]],
+    ["home/src/testrepo", ["commit", "-qm", "add onbranch"]],
+    ["home/src/testrepo", ["checkout", "-q", "-"]]
+  ],
+  "apply_rc": 1
+}

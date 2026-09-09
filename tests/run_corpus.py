@@ -16,6 +16,15 @@ Each case under tests/corpus/<name>/ holds:
                    "mkdirs": ["home/x/.git"] directories to create, for what
                                              git cannot track (empty dirs,
                                              .git markers)
+                   "git": [["home/src/r", ["init", "-q"]], ...]
+                                             git commands to run in the copied
+                                             tree, for a case that needs real
+                                             history (a renamed skill). Run
+                                             with a fixed identity and date,
+                                             and with user config ignored, so
+                                             the result does not vary by
+                                             machine. Commit hashes still
+                                             print as <SHA>.
                    "hostname_manifest": "h"  rename root/manifests/h.json to
                                              this machine's short hostname
                                              (its name prints as <HOST>)
@@ -60,6 +69,7 @@ import argparse
 import difflib
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -136,6 +146,29 @@ def system_path() -> list[str]:
     return ["/usr/bin", "/bin"]
 
 
+GIT_SETUP_ENV = {
+    "GIT_AUTHOR_NAME": "corpus",
+    "GIT_AUTHOR_EMAIL": "corpus@example.invalid",
+    "GIT_COMMITTER_NAME": "corpus",
+    "GIT_COMMITTER_EMAIL": "corpus@example.invalid",
+    "GIT_AUTHOR_DATE": "2026-01-01T00:00:00+0000",
+    "GIT_COMMITTER_DATE": "2026-01-01T00:00:00+0000",
+    # The user's own git config must not reach a case: autocrlf, hooks and
+    # templates would all change what the tool then reads back.
+    "GIT_CONFIG_GLOBAL": os.devnull,
+    "GIT_CONFIG_SYSTEM": os.devnull,
+}
+
+
+def run_case_git(cwd: Path, argv: list[str]) -> None:
+    """One git command in a case's tree, with everything machine-specific off."""
+    cwd.mkdir(parents=True, exist_ok=True)
+    r = subprocess.run(["git", *argv], cwd=cwd, text=True, capture_output=True,
+                       env={**os.environ, **GIT_SETUP_ENV})
+    if r.returncode != 0:
+        raise RuntimeError(f"case git {argv} in {cwd} failed: {r.stderr.strip()}")
+
+
 class Sandbox:
     """A scratch copy of one corpus case, with the environment the tool sees."""
 
@@ -150,6 +183,8 @@ class Sandbox:
         substitute(Path(self.dir), "<CASE>", self.dir)
         for rel in self.spec.get("mkdirs", []):
             (Path(self.dir) / rel).mkdir(parents=True, exist_ok=True)
+        for rel, argv in self.spec.get("git", []):
+            run_case_git(Path(self.dir) / rel, argv)
         self.home = Path(self.dir) / "home"
         self.home.mkdir(exist_ok=True)
         bin_dir = Path(self.dir) / "bin"
@@ -217,6 +252,8 @@ class Sandbox:
             s = s.replace(self.dir.replace("\\", "/"), "<CASE>").replace("\\", "/")
         if self.host:
             s = s.replace(self.host, "<HOST>")
+        s = re.sub(r"\b(renamed to \S+ in|deleted in) [0-9a-f]{7,40}\b",
+                   r"\1 <SHA>", s)
         return s
 
     def normalise(self, obj):

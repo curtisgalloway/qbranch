@@ -784,6 +784,254 @@ def offer_claude(failures: list[str]) -> None:
         os.execvp("claude", ["claude", prompt])
 
 
+# ---------------------------------------------------------------------------
+# Why a skill source went missing
+# ---------------------------------------------------------------------------
+#
+# A manifest entry whose source has vanished has four possible causes, and
+# they want opposite fixes: the directory was renamed (rewrite the entry),
+# deleted (remove it), lives on a branch this checkout lacks, or never
+# existed. Git records no directory renames, only per-file ones, so the
+# directory-level answer is aggregated back out of the R lines.
+
+RENAME_LOG_DEPTH = "500"
+RENAME_MAX_HOPS = 8
+
+
+def git_root(p: Path) -> Path | None:
+    """The enclosing git work tree of p, which need not exist itself."""
+    for d in [p, *p.parents]:
+        if (d / ".git").exists():
+            return d
+    return None
+
+
+def git_out(root: Path, *rest: str) -> str | None:
+    """Run git in root, returning stdout, or None when it fails."""
+    r = subprocess.run(["git", "-C", str(root), *rest],
+                       capture_output=True, text=True)
+    return r.stdout if r.returncode == 0 else None
+
+
+def parse_rename_log(out: str) -> list[tuple[str, int, str, str]]:
+    """(commit, score, old, new) per change, newest first; new is "" for a delete."""
+    commit = ""
+    changes: list[tuple[str, int, str, str]] = []
+    for line in out.splitlines():
+        if not line:
+            continue
+        if "\t" not in line:
+            commit = line.strip()
+            continue
+        cols = line.split("\t")
+        status = cols[0]
+        if status.startswith("R") and len(cols) >= 3:
+            try:
+                score = int(status[1:])
+            except ValueError:
+                score = 0
+            changes.append((commit, score, cols[1], cols[2]))
+        elif status.startswith("D") and len(cols) >= 2:
+            changes.append((commit, 0, cols[1], ""))
+    return changes
+
+
+def path_under(child: str, d: str) -> bool:
+    """child is d itself or below it."""
+    return child == d or child.startswith(d + "/")
+
+
+def destination_dir(old: str, new: str, old_dir: str) -> str | None:
+    """The directory a moved file landed in, mapped back to the old directory.
+
+    Trimming by depth rather than by prefix is what lets a skill move out of
+    its parent entirely, as it does when a repo is restructured into plugins.
+    """
+    if not old.startswith(old_dir):
+        return None
+    tail = old[len(old_dir):].lstrip("/")
+    depth = len(tail.split("/"))
+    parts = new.split("/")
+    if len(parts) <= depth:
+        return None
+    return "/".join(parts[:len(parts) - depth])
+
+
+def rename_hop(changes: list[tuple[str, int, str, str]], d: str,
+               root: Path) -> tuple[list[dict], str]:
+    """Destinations for one hop: where files under d moved, and the commit."""
+    dests: dict[str, dict] = {}
+    commit = ""
+    for c_commit, score, old, new in changes:
+        if not new or not path_under(old, d):
+            continue
+        dd = destination_dir(old, new, d)
+        if dd is None or dd == d:
+            continue
+        if not commit:
+            commit = c_commit
+        if dd in dests:
+            dests[dd]["files"] += 1
+            dests[dd]["min_score"] = min(dests[dd]["min_score"], score)
+        else:
+            dests[dd] = {"rel": dd, "files": 1, "min_score": score,
+                         "exists_now": (root / dd).is_dir()}
+    out = sorted(dests.values(), key=lambda x: (-x["files"], x["rel"]))
+    return out, commit
+
+
+def measure_missing(missing: Path) -> dict | None:
+    """What git knows about a missing path, before any judgement is applied.
+
+    The log is deliberately not path-limited: -M only detects a rename when
+    the pathspec covers both sides of it, so limiting to the missing path's
+    parent hides every move that leaves that parent.
+    """
+    root = git_root(missing)
+    if root is None:
+        return None
+    rel = missing.relative_to(root).as_posix()
+
+    out = git_out(root, "log", "--diff-filter=RD", "-M", "--name-status",
+                  "--format=%h", "-n", RENAME_LOG_DEPTH)
+    if out is None:
+        return None
+    changes = parse_rename_log(out)
+
+    current = rel
+    hops = 0
+    ambiguous = False
+    commit = ""
+    chain_min = 100
+    dests: list[dict] = []
+    while True:
+        dests, c = rename_hop(changes, current, root)
+        if not dests:
+            break
+        if len(dests) > 1:
+            ambiguous = True
+            break
+        if not commit:
+            commit = c
+        chain_min = min(chain_min, dests[0]["min_score"])
+        dests[0]["min_score"] = chain_min
+        current = dests[0]["rel"]
+        hops += 1
+        if dests[0]["exists_now"] or hops >= RENAME_MAX_HOPS:
+            break
+
+    deleted = sum(1 for _, _, old, new in changes
+                  if not new and path_under(old, current))
+    if not commit:
+        for c_commit, _, old, new in changes:
+            if not new and path_under(old, current):
+                commit = c_commit
+                break
+
+    held = 0
+    if commit:
+        tree = git_out(root, "ls-tree", "-r", "--name-only", f"{commit}^",
+                       "--", rel)
+        if tree is not None:
+            held = sum(1 for line in tree.splitlines() if line.strip())
+
+    other_refs = ""
+    if not dests and deleted == 0:
+        refs = git_out(root, "log", "--all", "--format=%d", "-n", "1",
+                       "--", rel)
+        if refs is not None:
+            # %d decorates as " (feature)"; the parentheses are git's, not
+            # part of the ref name.
+            first = refs.splitlines()[0] if refs.splitlines() else ""
+            other_refs = first.strip().lstrip("(").rstrip(")")
+
+    return {"destinations": dests, "ambiguous": ambiguous,
+            "deleted": deleted, "held": held, "commit": commit,
+            "other_refs": other_refs}
+
+
+def pick_destination(s: dict) -> dict | None:
+    """Choose the destination to suggest, or None to fall through.
+
+    Refuses a destination that is not on disk, one where the directory was
+    split across several places, and one where less than half of what the
+    directory held made the trip. No similarity floor: git's own rename
+    threshold is 50%, and the real cases sit at 75 and 98, so a floor tight
+    enough to matter would reject them.
+    """
+    if s["ambiguous"] or len(s["destinations"]) != 1:
+        return None
+    d = s["destinations"][0]
+    if not d["exists_now"]:
+        return None
+    if s["held"] > 0 and d["files"] * 2 < s["held"]:
+        return None
+    return d
+
+
+def diagnose_missing(missing: Path) -> tuple:
+    """('renamed', new_rel, new_name, commit) | ('deleted', commit)
+    | ('elsewhere', refs) | ('unknown',).
+
+    new_rel is repo-relative; join it onto git_root() for an absolute path.
+    """
+    s = measure_missing(missing)
+    if s is None:
+        return ("unknown",)
+    d = pick_destination(s)
+    if d is not None:
+        rel = d["rel"]
+        return ("renamed", rel, rel.rsplit("/", 1)[-1], s["commit"])
+    if s["deleted"] > 0:
+        return ("deleted", s["commit"])
+    if s["other_refs"]:
+        return ("elsewhere", s["other_refs"])
+    return ("unknown",)
+
+
+def rename_hint(missing: Path, label: str, is_skill: bool) -> str:
+    """A one-line explanation to append to a missing-source message.
+
+    is_skill gates the suggested command: only a skills entry can be
+    rewritten or dropped by name.
+    """
+    v = diagnose_missing(missing)
+    if v[0] == "renamed":
+        fix = "; fix: qbranch --fix-renames" if is_skill else ""
+        return f" — renamed to {v[2]} in {v[3]}{fix}"
+    if v[0] == "deleted":
+        fix = f"; fix: qbranch --remove-skill {label}" if is_skill else ""
+        return f" — deleted in {v[1]}{fix}"
+    if v[0] == "elsewhere":
+        return f" — not on this branch; present on {v[1]}"
+    return ""
+
+
+def repo_rel(root: Path, p: Path) -> str | None:
+    """The path of p relative to its git work tree, in git's own notation."""
+    try:
+        return p.relative_to(root).as_posix()
+    except ValueError:
+        return None
+
+
+def rewrite_manifest_path(old_path: str, old_rel: str, new_rel: str) -> str | None:
+    """Repoint a manifest entry's path at the new location.
+
+    The stored string may carry a ${QBRANCH_ROOT} or ${HOME} prefix, so the
+    tail is swapped rather than the whole value replaced: the shape the user
+    wrote survives the edit. None means leave it alone rather than guess.
+    """
+    normalised = old_path.replace("\\", "/")
+    if normalised.endswith(old_rel):
+        return normalised[:len(normalised) - len(old_rel)] + new_rel
+    old_base = old_rel.rsplit("/", 1)[-1]
+    new_base = new_rel.rsplit("/", 1)[-1]
+    if not normalised.endswith(old_base):
+        return None
+    return normalised[:len(normalised) - len(old_base)] + new_base
+
+
 def add_skill_to_manifest(
     manifest_name: str,
     skill_name: str,
@@ -823,6 +1071,55 @@ def remove_skill_from_manifest(manifest_name: str, skill_name: str) -> bool:
     manifest["skills"] = after
     p.write_text(json.dumps(manifest, indent=2) + "\n")
     return True
+
+
+def fix_renames_in_manifest(manifest_name: str) -> list[tuple[str, str, str]]:
+    """Follow renamed sources: repoint every skills entry whose directory moved.
+
+    Only a confident rename is acted on; a deletion, a path held on another
+    branch and an unreadable history all leave the entry alone, because the
+    right answer for those is a decision, not a rewrite. Returns
+    (old name, new name, new path) per entry changed.
+    """
+    p = REPO / "manifests" / f"{manifest_name}.json"
+    manifest = json.loads(p.read_text())
+    skills = manifest.get("skills", [])
+
+    changed: list[tuple[str, str, str]] = []
+    for entry in skills:
+        name = entry.get("name")
+        if not name:
+            continue
+        src = resolve_skill_src(entry)
+        if src.exists():
+            continue
+        v = diagnose_missing(src)
+        if v[0] != "renamed":
+            continue
+        _, new_rel, new_name, _commit = v
+        root = git_root(src)
+        if root is None:
+            continue
+        old_rel = repo_rel(root, src)
+        if old_rel is None:
+            continue
+        new_path = rewrite_manifest_path(entry.get("path", ""), old_rel, new_rel)
+        if new_path is None:
+            continue
+        # The link in ~/.agents/skills/ is named from the entry, so a name
+        # that tracked the directory follows it. A name the user chose for
+        # themselves is theirs to keep.
+        old_base = old_rel.rsplit("/", 1)[-1]
+        entry_name = new_name if name == old_base else name
+        entry["name"] = entry_name
+        entry["path"] = new_path
+        changed.append((name, entry_name, new_path))
+
+    if not changed:
+        return []
+    manifest["skills"] = skills
+    p.write_text(json.dumps(manifest, indent=2) + "\n")
+    return changed
 
 
 def merge_fragments(base: dict, overlay: dict) -> dict:
@@ -1577,6 +1874,12 @@ def main() -> int:
     ap.add_argument("--skill-path", metavar="PATH",
                     help="Path within the repo (used with --add-skill --repo). "
                          "Defaults to skills/<skill-name>.")
+    ap.add_argument("--fix-renames", action="store_true",
+                    help="Repoint skills entries whose source directory has "
+                         "moved in its repo, and exit. Only a confident "
+                         "rename is rewritten: a deleted skill, or one held "
+                         "on a branch this checkout lacks, is reported and "
+                         "left alone.")
     ap.add_argument("--all", dest="all_manifests", action="store_true",
                     help="With --add-skill/--remove-skill: apply to every manifest "
                          "in manifests/. Prints a reminder to sync each machine afterwards.")
@@ -1679,10 +1982,42 @@ def main() -> int:
         resolve_root(args.root, state)
         return edit_skill(args, state)
 
+    if args.fix_renames:
+        state = load_state(state_path)
+        resolve_root(args.root, state)
+        return fix_renames(args, state)
+
     if args.json and not args.dry_run:
         sys.exit("--json on a sync needs --dry-run (it prints the plan); "
                  "--plugin-status and --audit have their own JSON reports")
     return sync(args, skills_target, state_path)
+
+
+def fix_renames(args: argparse.Namespace, state: dict) -> int:
+    """--fix-renames against one manifest or all of them."""
+    if args.all_manifests:
+        targets = list_manifests()
+        if not targets:
+            sys.exit("no manifests found")
+    else:
+        targets = [choose_manifest(args.manifest, state)]
+
+    total = 0
+    for mname in targets:
+        for old, new, path in fix_renames_in_manifest(mname):
+            total += 1
+            if old == new:
+                print(f"  update   {old}  -> {path}  ({mname})")
+            else:
+                print(f"  update   {old} -> {new}  -> {path}  ({mname})")
+    if total == 0:
+        print("no renamed skill sources to follow")
+        return 0
+    entries = "entry" if total == 1 else "entries"
+    print(f"\n{total} {entries} updated. Run qbranch to apply.")
+    if args.all_manifests:
+        print("Remember to run qbranch on each machine.")
+    return 0
 
 
 def edit_skill(args: argparse.Namespace, state: dict) -> int:
@@ -1868,6 +2203,7 @@ def sync(args: argparse.Namespace, skills_target: Path, state_path: Path) -> int
             note = "source missing"
             if dst.is_symlink() and not dst.exists():
                 note = "source missing (will remove stale link)"
+            note += rename_hint(src, label, dst.parent == skills_target)
             actions.append(("MISS", label, src, dst, note))
             continue
         if dst.is_symlink():
@@ -2002,6 +2338,7 @@ def sync(args: argparse.Namespace, skills_target: Path, state_path: Path) -> int
                 if dst.is_symlink() and not dst.exists():
                     dst.unlink()
                     msg += f" (removed stale link at {dst})"
+                msg += rename_hint(src, label, dst.parent == skills_target)
                 print(f"ERROR: {msg}", file=sys.stderr)
                 failures.append(msg)
                 had_error = True

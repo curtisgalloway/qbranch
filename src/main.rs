@@ -87,6 +87,12 @@ struct Cli {
     #[arg(long, value_name = "PATH")]
     skill_path: Option<String>,
 
+    /// Repoint skills entries whose source directory has moved in its repo,
+    /// and exit. Only a confident rename is rewritten: a deleted skill, or one
+    /// held on a branch this checkout lacks, is reported and left alone.
+    #[arg(long)]
+    fix_renames: bool,
+
     /// With --add-skill/--remove-skill: apply to every manifest in
     /// manifests/. Prints a reminder to sync each machine afterwards.
     #[arg(long = "all")]
@@ -268,6 +274,12 @@ fn run() -> i32 {
         return edit_skill(&ctx, &args, &state);
     }
 
+    if args.fix_renames {
+        let state = state::load_state(&state_path);
+        state::resolve_root(&mut ctx, args.root.as_deref(), &state);
+        return fix_renames(&ctx, &args, &state);
+    }
+
     if args.json && !args.dry_run {
         die("--json on a sync needs --dry-run (it prints the plan); --plugin-status and --audit have their own JSON reports");
     }
@@ -282,6 +294,41 @@ fn run() -> i32 {
             link_mode: args.link_mode.clone(),
         },
     )
+}
+
+/// --fix-renames against one manifest or all of them.
+fn fix_renames(ctx: &Ctx, args: &Cli, state: &JMap) -> i32 {
+    let targets = if args.all_manifests {
+        let t = manifest::list_manifests(ctx);
+        if t.is_empty() {
+            die("no manifests found");
+        }
+        t
+    } else {
+        vec![state::choose_manifest(ctx, args.manifest.as_deref(), state)]
+    };
+
+    let mut total = 0usize;
+    for mname in &targets {
+        for (old, new, path) in manifest::fix_renames_in_manifest(ctx, mname) {
+            total += 1;
+            if old == new {
+                println!("  update   {old}  -> {path}  ({mname})");
+            } else {
+                println!("  update   {old} -> {new}  -> {path}  ({mname})");
+            }
+        }
+    }
+    if total == 0 {
+        println!("no renamed skill sources to follow");
+        return 0;
+    }
+    let entries = if total == 1 { "entry" } else { "entries" };
+    println!("\n{total} {entries} updated. Run qbranch to apply.");
+    if args.all_manifests {
+        println!("Remember to run qbranch on each machine.");
+    }
+    0
 }
 
 /// --add-skill / --remove-skill against one manifest or all of them.

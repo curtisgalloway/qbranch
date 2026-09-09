@@ -1,0 +1,11 @@
+{
+  "schema": 2,
+  "name": "renamed",
+  "description": "corpus case renamed-skill",
+  "skills": [
+    { "name": "alpha", "path": "${HOME}/src/testrepo/skills/alpha" },
+    { "name": "beta", "path": "${HOME}/src/testrepo/skills/beta" },
+    { "name": "onbranch", "path": "${HOME}/src/testrepo/skills/onbranch" },
+    { "name": "ghost", "path": "${HOME}/src/testrepo/skills/ghost" }
+  ]
+}

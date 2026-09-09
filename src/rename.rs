@@ -15,10 +15,6 @@
 //! to the old path itself returns nothing, because history simplification
 //! prunes a pathspec that no longer resolves in HEAD.
 
-// Nothing calls this yet: the MISS path in sync.rs and --fix-renames are the
-// consumers, and this allow comes off when they land.
-#![allow(dead_code)]
-
 use crate::proc;
 use crate::util::display;
 use std::path::{Path, PathBuf};
@@ -49,9 +45,6 @@ pub struct Signals {
     /// Where the trail ends: the destinations found at the final hop, most
     /// files first. One entry is the ordinary case.
     pub destinations: Vec<Destination>,
-    /// Renames followed to get there. More than one means the directory moved
-    /// repeatedly, as it does when a repo is restructured under it.
-    pub hops: usize,
     /// A hop offered several destinations at once, so the trail was cut short
     /// rather than guessed at.
     pub ambiguous: bool,
@@ -68,9 +61,10 @@ pub struct Signals {
 /// What to tell the user about a missing source.
 #[derive(Clone, Debug)]
 pub enum Verdict {
-    /// Moved. `new_src` is absolute; `new_name` is its basename.
+    /// Moved. `new_rel` is repo-relative; `new_name` is its basename. Join
+    /// `new_rel` onto the work tree for an absolute path.
     Renamed {
-        new_src: PathBuf,
+        new_rel: String,
         new_name: String,
         commit: String,
     },
@@ -360,7 +354,17 @@ pub fn measure(missing: &Path) -> Option<Signals> {
             &root,
             &["log", "--all", "--format=%d", "-n", "1", "--", &rel],
         )
-        .map(|o| o.lines().next().unwrap_or("").trim().to_string())
+        .map(|o| {
+            // %d decorates as " (feature)"; the parentheses are git's, not
+            // part of the ref name.
+            o.lines()
+                .next()
+                .unwrap_or("")
+                .trim()
+                .trim_start_matches('(')
+                .trim_end_matches(')')
+                .to_string()
+        })
         .unwrap_or_default()
     } else {
         String::new()
@@ -368,7 +372,6 @@ pub fn measure(missing: &Path) -> Option<Signals> {
 
     Some(Signals {
         destinations: dests,
-        hops,
         ambiguous,
         deleted,
         held,
@@ -377,20 +380,75 @@ pub fn measure(missing: &Path) -> Option<Signals> {
     })
 }
 
+/// The path of `p` relative to its git work tree, in git's own notation.
+pub fn repo_rel(root: &Path, p: &Path) -> Option<String> {
+    Some(
+        p.strip_prefix(root)
+            .ok()?
+            .to_string_lossy()
+            .replace('\\', "/"),
+    )
+}
+
+/// Repoint a manifest entry's `path` at the new location.
+///
+/// The stored string may carry a `${QBRANCH_ROOT}` or `${HOME}` prefix, or be
+/// repo-relative already, so the tail is swapped rather than the whole value
+/// replaced: the shape the user wrote survives the edit. Returns `None` when
+/// the string does not end the way the resolved path says it should, which is
+/// the signal to leave it alone rather than guess.
+pub fn rewrite_path(old_path: &str, old_rel: &str, new_rel: &str) -> Option<String> {
+    let normalised = old_path.replace('\\', "/");
+    if let Some(head) = normalised.strip_suffix(old_rel) {
+        return Some(format!("{head}{new_rel}"));
+    }
+    let old_base = old_rel.rsplit('/').next()?;
+    let new_base = new_rel.rsplit('/').next()?;
+    let head = normalised.strip_suffix(old_base)?;
+    Some(format!("{head}{new_base}"))
+}
+
+/// A one-line explanation to append to a missing-source message.
+///
+/// `is_skill` gates the suggested command: only a `skills` entry can be
+/// rewritten or dropped by name, so a `links` entry is explained and left
+/// without advice it cannot act on.
+pub fn hint(missing: &Path, label: &str, is_skill: bool) -> String {
+    match diagnose(missing) {
+        Verdict::Renamed {
+            new_name, commit, ..
+        } => {
+            let fix = if is_skill {
+                "; fix: qbranch --fix-renames"
+            } else {
+                ""
+            };
+            format!(" — renamed to {new_name} in {commit}{fix}")
+        }
+        Verdict::Deleted { commit } => {
+            let fix = if is_skill {
+                format!("; fix: qbranch --remove-skill {label}")
+            } else {
+                String::new()
+            };
+            format!(" — deleted in {commit}{fix}")
+        }
+        Verdict::Elsewhere { refs } => {
+            format!(" — not on this branch; present on {refs}")
+        }
+        Verdict::Unknown => String::new(),
+    }
+}
+
 /// Diagnose a missing source path.
 pub fn diagnose(missing: &Path) -> Verdict {
     let Some(s) = measure(missing) else {
         return Verdict::Unknown;
     };
-    let root = match git_root(missing) {
-        Some(r) => r,
-        None => return Verdict::Unknown,
-    };
     if let Some(d) = pick_destination(&s) {
-        let new_src = root.join(&d.rel);
         let new_name = d.rel.rsplit('/').next().unwrap_or(&d.rel).to_string();
         return Verdict::Renamed {
-            new_src,
+            new_rel: d.rel.clone(),
             new_name,
             commit: s.commit.clone(),
         };
@@ -488,10 +546,10 @@ mod tests {
         let d = repo("plain");
         match diagnose(&d.join("skills/alpha")) {
             Verdict::Renamed {
-                new_name, new_src, ..
+                new_name, new_rel, ..
             } => {
                 assert_eq!(new_name, "alpha-renamed");
-                assert_eq!(new_src, d.join("skills/alpha-renamed"));
+                assert_eq!(new_rel, "skills/alpha-renamed");
             }
             v => panic!("expected Renamed, got {v:?}"),
         }
@@ -500,11 +558,10 @@ mod tests {
     #[test]
     fn follows_a_rename_through_a_restructure() {
         let d = repo("chain");
-        let s = measure(&d.join("skills/gamma")).expect("signals");
-        assert_eq!(s.hops, 2, "should follow both hops");
         match diagnose(&d.join("skills/gamma")) {
-            Verdict::Renamed { new_src, .. } => {
-                assert_eq!(new_src, d.join("plugins/pack/skills/gamma-renamed"));
+            Verdict::Renamed { new_rel, .. } => {
+                // Both hops followed: the rename, then the restructure.
+                assert_eq!(new_rel, "plugins/pack/skills/gamma-renamed");
             }
             v => panic!("expected Renamed, got {v:?}"),
         }
@@ -549,8 +606,8 @@ mod tests {
         let path = PathBuf::from(&target);
         if let Some(s) = measure(&path) {
             println!(
-                "held={} deleted={} hops={} ambiguous={} commit={}",
-                s.held, s.deleted, s.hops, s.ambiguous, s.commit
+                "held={} deleted={} ambiguous={} commit={}",
+                s.held, s.deleted, s.ambiguous, s.commit
             );
             for d in &s.destinations {
                 println!(
