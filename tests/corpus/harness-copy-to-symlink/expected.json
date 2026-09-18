@@ -1,0 +1,38 @@
+{
+  "tool": "0.3.0",
+  "schema": 2,
+  "manifest": "refresh",
+  "dry_run": true,
+  "skills_target": "<CASE>/home/.agents/skills",
+  "link_mode": "symlink",
+  "claude": true,
+  "agy": true,
+  "desired": 3,
+  "actions": [
+    {
+      "op": "relink",
+      "label": "alpha",
+      "src": "<CASE>/root/skills/alpha",
+      "dst": "<CASE>/home/.agents/skills/alpha",
+      "note": "was: copy"
+    },
+    {
+      "op": "relink",
+      "label": "claude-skills",
+      "src": "<CASE>/home/.agents/skills",
+      "dst": "<CASE>/home/.claude/skills",
+      "note": "was: copy"
+    },
+    {
+      "op": "relink",
+      "label": "agy-skills",
+      "src": "<CASE>/home/.agents/skills",
+      "dst": "<CASE>/home/.gemini/antigravity-cli/skills",
+      "note": "was: copy"
+    }
+  ],
+  "plugin_actions": [],
+  "unlinked_repo_skills": [],
+  "messages": [],
+  "failures": []
+}

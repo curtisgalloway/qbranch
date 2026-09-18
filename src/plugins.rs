@@ -480,6 +480,7 @@ pub fn manage_plugin(
         Ok(m) => m,
         Err(e) => return (notes, vec![format!("{}: {e}", display(&mpath))]),
     };
+    crate::manifest::migrate_manifest(manifest_name, manifest.clone());
     let mut fragments = util::arr_or_empty(&manifest, "claude_settings");
     if fragments.is_empty() {
         return (

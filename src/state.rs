@@ -157,7 +157,7 @@ pub fn save_state(
     for (k, v) in settings_applied {
         out.insert(k.clone(), Json::Object(v.clone().unwrap_or_default()));
     }
-    if let Err(e) = util::write_json(state_path, &Json::Object(out)) {
+    if let Err(e) = util::write_json_private(state_path, &Json::Object(out)) {
         die(format!("{}: {}", display(state_path), e));
     }
     let legacy = paths::parent(state_path).join(LEGACY_STATE_FILE_NAME);

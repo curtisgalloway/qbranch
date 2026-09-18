@@ -71,8 +71,9 @@ prebuilt binary.
 **Anything else.** Every release carries a tarball or zip per platform, listed in its
 `SHA256SUMS`. Unpack it and put `qbranch` on your `PATH`.
 
-Each package also carries the tool's own two skills under `share/qbranch/skills`, beside
-`bin`, so they are on hand without a source checkout.
+The three bundled skills are available through `qbranch --skill` on every install, including
+Cargo installs. The .deb and MSI also install them under `share/qbranch/skills`; release
+archives carry a `skills/` directory beside the executable.
 
 Then point it at your config root once:
 
@@ -165,8 +166,7 @@ plugins a machine has installed but no fragment manages, deciding each one's fat
 structured questions. `skills/agent-audit` runs the overall audit and walks its findings the
 same way. List this checkout as a skill repo in a manifest to link them. `qbranch --skill`
 lists them and `qbranch --skill qbranch` prints the guide verbatim, so an agent that finds
-qbranch on its PATH can read how to drive it before any manifest exists; every package also
-carries the same files under `share/qbranch/skills`.
+qbranch on its PATH can read how to drive it before any manifest exists.
 
 ## Tests
 
@@ -176,6 +176,10 @@ cargo build --release && QBRANCH_BIN=target/release/qbranch python3 tests/run_co
 python3 tests/run_parity.py    # apply every case with both and diff what they leave behind
 python3 tests/run_corpus.py --apply           # apply for real; the next dry run must be a no-op
 QBRANCH_LINK_MODE=copy python3 tests/run_corpus.py --apply   # the same in copy mode
+cargo test                   # Rust I/O, timeout and rename regressions
+python3 tests/test_units.py   # Python fault-injection unit tests
+python3 tests/run_regressions.py             # multi-step Python regressions
+QBRANCH_BIN=target/release/qbranch python3 tests/run_regressions.py
 ```
 
 Runs every case under `tests/corpus/` in a temporary copy with `HOME`, `CLAUDE_CONFIG_DIR`,

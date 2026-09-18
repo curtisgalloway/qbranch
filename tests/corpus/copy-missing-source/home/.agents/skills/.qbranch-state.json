@@ -1,0 +1,7 @@
+{
+  "schema": 2,
+  "manifest": "missing",
+  "link_mode": "copy",
+  "links": ["<CASE>/home/.agents/skills/alpha"],
+  "copies": ["<CASE>/home/.agents/skills/alpha"]
+}

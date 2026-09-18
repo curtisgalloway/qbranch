@@ -1,0 +1,24 @@
+{
+  "tool": "0.3.0",
+  "schema": 2,
+  "manifest": "repo",
+  "dry_run": true,
+  "skills_target": "<CASE>/home/.agents/skills",
+  "link_mode": "symlink",
+  "claude": false,
+  "agy": false,
+  "desired": 1,
+  "actions": [
+    {
+      "op": "link",
+      "label": "remote",
+      "src": "<CASE>/home/.agents/skill-repos/upstream/skills/remote",
+      "dst": "<CASE>/home/.agents/skills/remote",
+      "note": ""
+    }
+  ],
+  "plugin_actions": [],
+  "unlinked_repo_skills": [],
+  "messages": [],
+  "failures": []
+}

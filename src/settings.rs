@@ -194,11 +194,6 @@ pub fn sync_settings(
             "{agent} settings: converting symlink -> real file  {}",
             display(target)
         ));
-        if !dry_run {
-            if let Err(e) = paths::unlink(target).and_then(|_| fs::write(target, &content)) {
-                die(format!("{}: {e}", display(target)));
-            }
-        }
         live = match serde_json::from_str(&content) {
             Ok(Json::Object(m)) => m,
             Ok(other) => die(format!(
@@ -208,6 +203,11 @@ pub fn sync_settings(
             )),
             Err(e) => die(format!("{}: {e}", display(target))),
         };
+        if !dry_run {
+            if let Err(e) = util::write_private(target, content.as_bytes()) {
+                die(format!("{}: {e}", display(target)));
+            }
+        }
     } else if target.is_file() {
         match util::read_json_object(target) {
             Ok(m) => live = m,

@@ -1,0 +1,8 @@
+{
+  "manifest": "repo",
+  "git": [
+    ["upstream", ["init", "-q"]],
+    ["upstream", ["add", "."]],
+    ["upstream", ["commit", "-qm", "fixture"]]
+  ]
+}

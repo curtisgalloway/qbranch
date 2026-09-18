@@ -437,8 +437,10 @@ jobs:
             **Anything else**: a tarball or zip per platform below, listed in
             `SHA256SUMS`. Unpack it and put `qbranch` on your PATH.
 
-            Every package was installed and exercised by the job that built
-            it, after the corpus passed against that binary.
+            The corpus passed against the native builds; Intel macOS was
+            cross-built without a corpus run. The .deb and MSI were installed
+            and exercised in their build jobs. Archives were packaged from
+            those builds without a separate installation check.
 
   tap:
     name: bump the Homebrew tap

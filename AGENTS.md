@@ -119,9 +119,10 @@ HANDOFF.md             session handoff, untracked; read it first when it exists
 2. Tag `vX.Y.Z` and push the tag. The `version` job refuses a tag that disagrees with either
    version string.
 3. `release.yml` builds macOS on both architectures, Linux for musl on both architectures
-   (fully static) and Windows; runs the corpus against each binary on a native runner;
-   packages a tarball per target, the `.deb` and the MSI; installs and exercises each package
-   in the job that built it; attaches everything with `SHA256SUMS` to the GitHub release; then
+   (fully static) and Windows; runs the corpus against the native builds (Intel macOS is
+   cross-built without a corpus run); packages a tarball per target, the `.deb` and the MSI;
+   installs and exercises the `.deb` and MSI in the jobs that built them; attaches everything
+   with `SHA256SUMS` to the GitHub release; then
    dispatches the tap bump and publishes the crate. `workflow_dispatch` runs the same pipeline
    as artifacts only, with no release and no fan-out, for testing it.
 4. The Windows job waits for the `release` environment's reviewer approval, so a release is
@@ -161,8 +162,9 @@ Channels, and what arms each:
 - **Tarballs and the zip**: one top-level directory holding `qbranch`, `LICENSE`, `README.md`
   and `skills/`.
 
-Every channel installs the same bin-beside-share layout, with the two skills under
-`share/qbranch/skills`, so they are in a predictable place on any of them.
+The `.deb` and MSI install the three skills under `share/qbranch/skills`. Release archives
+carry `skills/` beside the executable. Every binary embeds all three skills for `--skill`,
+including Cargo installs, which install no separate skill files.
 
 ## Working here
 

@@ -22,18 +22,21 @@ pub struct Desired {
     pub dst: PathBuf,
 }
 
-/// Return the local root of repo_url, cloning if necessary.
+/// Return the local root of repo_url; fetch only during an actual sync.
 ///
 /// Checks ~/src/<name> first (convention); if that's a git checkout it is
 /// used as-is. Otherwise clones into ~/.agents/skill-repos/<name>/ and pulls
 /// on every subsequent sync.
-pub fn resolve_repo_local(ctx: &Ctx, repo_url: &str) -> PathBuf {
+pub fn resolve_repo_local(ctx: &Ctx, repo_url: &str, update: bool) -> PathBuf {
     let name = repo_name_from_url(repo_url);
     let local = local_checkout(ctx, repo_url);
     if local.is_dir() && local.join(".git").exists() {
         return local;
     }
     let cache = ctx.skill_repos_cache.join(&name);
+    if !update {
+        return cache;
+    }
     if cache.is_dir() && cache.join(".git").exists() {
         let argv: Vec<String> = ["git", "-C", &display(&cache), "pull", "--ff-only"]
             .iter()
@@ -61,11 +64,24 @@ pub fn resolve_repo_local(ctx: &Ctx, repo_url: &str) -> PathBuf {
     cache
 }
 
+/// Fetch each repo-based source once, before planning an actual sync.
+pub fn prepare_skill_repos(ctx: &Ctx, manifest: &JMap) {
+    let mut seen = HashSet::new();
+    for entry in util::arr_or_empty(manifest, "skills") {
+        if let Some(repo) = util::obj(Some(&entry)).and_then(|e| e.get("repo")) {
+            let url = util::py_str(repo);
+            if seen.insert(url.clone()) {
+                resolve_repo_local(ctx, &url, true);
+            }
+        }
+    }
+}
+
 /// Return the source path for a skills entry (path-based or repo-based).
 pub fn resolve_skill_src(ctx: &Ctx, entry: &JMap) -> PathBuf {
     if let Some(repo) = entry.get("repo") {
         let rel = paths::clean(&util::py_get_str(entry, "path"));
-        return resolve_repo_local(ctx, &util::py_str(repo)).join(rel);
+        return resolve_repo_local(ctx, &util::py_str(repo), false).join(rel);
     }
     ctx.expand(&util::py_get_str(entry, "path"))
 }

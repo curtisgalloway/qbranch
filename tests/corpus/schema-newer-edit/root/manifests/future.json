@@ -1,0 +1,7 @@
+{
+  "schema": 999,
+  "name": "future",
+  "skills": [
+    {"name": "alpha", "path": "${QBRANCH_ROOT}/skills/alpha"}
+  ]
+}

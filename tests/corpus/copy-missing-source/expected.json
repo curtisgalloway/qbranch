@@ -1,0 +1,24 @@
+{
+  "tool": "0.3.0",
+  "schema": 2,
+  "manifest": "missing",
+  "dry_run": true,
+  "skills_target": "<CASE>/home/.agents/skills",
+  "link_mode": "copy",
+  "claude": false,
+  "agy": false,
+  "desired": 1,
+  "actions": [
+    {
+      "op": "MISS",
+      "label": "alpha",
+      "src": "<CASE>/root/skills/alpha",
+      "dst": "<CASE>/home/.agents/skills/alpha",
+      "note": "source missing"
+    }
+  ],
+  "plugin_actions": [],
+  "unlinked_repo_skills": [],
+  "messages": [],
+  "failures": []
+}

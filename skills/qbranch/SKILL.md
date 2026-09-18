@@ -80,7 +80,9 @@ them.
   at that path; a missing one is a note in the plan, not an error.
 - `skills`: `{name, path}` for a local path, or `{name, repo, path}` for a path inside a git
   repo. For the repo form `~/src/<repo-name>` is used when it is a checkout; otherwise the
-  repo is cloned to `~/.agents/skill-repos/` and pulled on every sync. On a name collision a
+  repo is cloned to `~/.agents/skill-repos/` and pulled on every actual sync. Dry runs,
+  audits and rename fixes only inspect existing checkouts; an uncached source appears as
+  missing in a dry-run plan and is fetched when the sync is applied. On a name collision a
   manifest skill wins, then earlier repos over later ones.
 - `links`: `{src, dst}`, anything linked anywhere. Entries with a destination under
   `~/.claude/` are skipped where Claude Code is absent, under `~/.gemini/` where Antigravity

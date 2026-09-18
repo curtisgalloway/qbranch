@@ -1,0 +1,5 @@
+{
+  "manifest": "missing",
+  "args": ["--link-mode", "copy"],
+  "apply_rc": 1
+}

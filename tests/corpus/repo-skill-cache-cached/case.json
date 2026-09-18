@@ -1,0 +1,9 @@
+{
+  "manifest": "repo",
+  "git": [
+    ["upstream", ["init", "-q"]],
+    ["upstream", ["add", "."]],
+    ["upstream", ["commit", "-qm", "fixture"]],
+    [".", ["clone", "-q", "upstream", "home/.agents/skill-repos/upstream"]]
+  ]
+}
