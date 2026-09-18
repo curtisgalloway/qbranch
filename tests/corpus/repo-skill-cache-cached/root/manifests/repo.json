@@ -1,0 +1,11 @@
+{
+  "schema": 2,
+  "name": "repo",
+  "skill_repos": [],
+  "skills": [
+    {"name": "remote", "repo": "<CASE>/upstream", "path": "skills/remote"}
+  ],
+  "links": [],
+  "claude_settings": [],
+  "agy_settings": []
+}

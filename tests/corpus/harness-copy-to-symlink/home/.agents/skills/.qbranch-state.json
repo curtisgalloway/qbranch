@@ -1,0 +1,15 @@
+{
+  "schema": 2,
+  "manifest": "refresh",
+  "link_mode": "copy",
+  "links": [
+    "<CASE>/home/.agents/skills/alpha",
+    "<CASE>/home/.claude/skills",
+    "<CASE>/home/.gemini/antigravity-cli/skills"
+  ],
+  "copies": [
+    "<CASE>/home/.agents/skills/alpha",
+    "<CASE>/home/.claude/skills",
+    "<CASE>/home/.gemini/antigravity-cli/skills"
+  ]
+}

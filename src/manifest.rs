@@ -128,6 +128,7 @@ pub fn repo_name_from_url(url: &str) -> String {
 fn read_manifest_raw(ctx: &Ctx, manifest_name: &str) -> (PathBuf, JMap) {
     let p = ctx.manifest_path(manifest_name);
     let m = util::read_json_object(&p).unwrap_or_else(|e| die(format!("{}: {}", display(&p), e)));
+    migrate_manifest(manifest_name, m.clone());
     (p, m)
 }
 

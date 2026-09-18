@@ -5,9 +5,10 @@
 //! output byte-identical to the reference script's.
 
 use serde_json::{Map, Value as Json};
-use std::fs;
-use std::io;
-use std::path::Path;
+use std::fs::{self, OpenOptions};
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub type JMap = Map<String, Json>;
@@ -108,8 +109,171 @@ fn write_py(v: &Json, out: &mut String) {
     }
 }
 
+static STAGING_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// An owner-only directory beside a destination, removed when dropped.
+pub struct PrivateStagingDir {
+    path: PathBuf,
+}
+
+impl PrivateStagingDir {
+    pub fn beside(destination: &Path) -> io::Result<Self> {
+        let parent = destination.parent().unwrap_or_else(|| Path::new("."));
+        fs::create_dir_all(parent)?;
+        let stem = destination
+            .file_name()
+            .unwrap_or_else(|| std::ffi::OsStr::new("qbranch"))
+            .to_string_lossy();
+        for _ in 0..1000 {
+            let sequence = STAGING_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let path = parent.join(format!(".{stem}.qbranch-{}-{sequence}", std::process::id()));
+            #[cfg(unix)]
+            let created = {
+                use std::os::unix::fs::DirBuilderExt;
+                let mut builder = fs::DirBuilder::new();
+                builder.mode(0o700).create(&path)
+            };
+            #[cfg(not(unix))]
+            let created = fs::create_dir(&path);
+            match created {
+                Ok(()) => {
+                    return Ok(Self { path });
+                }
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(e),
+            }
+        }
+        Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "could not create unique staging directory",
+        ))
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Leave the directory behind for manual recovery after a failed rollback.
+    pub fn preserve(self) -> PathBuf {
+        let path = self.path.clone();
+        std::mem::forget(self);
+        path
+    }
+}
+
+impl Drop for PrivateStagingDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
+fn resolved_write_destination(p: &Path) -> PathBuf {
+    if fs::symlink_metadata(p)
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false)
+    {
+        crate::paths::resolve(p)
+    } else {
+        p.to_path_buf()
+    }
+}
+
+#[cfg(windows)]
+fn atomic_replace(source: &Path, destination: &Path) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    type Bool = i32;
+    #[link(name = "kernel32")]
+    extern "system" {
+        #[link_name = "MoveFileExW"]
+        fn move_file_ex_w(existing: *const u16, new: *const u16, flags: u32) -> Bool;
+    }
+    const MOVEFILE_REPLACE_EXISTING: u32 = 0x1;
+    const MOVEFILE_WRITE_THROUGH: u32 = 0x8;
+    let source: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
+    let destination: Vec<u16> = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    let ok = unsafe {
+        move_file_ex_w(
+            source.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if ok == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(windows))]
+fn atomic_replace(source: &Path, destination: &Path) -> io::Result<()> {
+    fs::rename(source, destination)
+}
+
+fn write_atomic(p: &Path, bytes: &[u8], private: bool, follow_symlink: bool) -> io::Result<()> {
+    let destination = if follow_symlink {
+        resolved_write_destination(p)
+    } else {
+        p.to_path_buf()
+    };
+    let staging = PrivateStagingDir::beside(&destination)?;
+    let staged = staging.path().join("new");
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&staged)?;
+    file.write_all(bytes)?;
+    file.flush()?;
+    file.sync_all()?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = if private {
+            0o600
+        } else {
+            fs::metadata(&destination)
+                .map(|m| m.permissions().mode() & 0o7777)
+                .unwrap_or(0o600)
+        };
+        file.set_permissions(fs::Permissions::from_mode(mode))?;
+    }
+    #[cfg(not(unix))]
+    let _ = private;
+    drop(file);
+    atomic_replace(&staged, &destination)
+}
+
 pub fn write_json(p: &Path, v: &Json) -> io::Result<()> {
-    fs::write(p, pretty(v) + "\n")
+    let mut bytes = serde_json::to_string_pretty(v)
+        .map(ascii_escape)
+        .map_err(io::Error::other)?
+        .into_bytes();
+    bytes.push(b'\n');
+    write_atomic(p, &bytes, false, true)
+}
+
+/// Atomically write an owner-only JSON file without following a destination link.
+pub fn write_json_private(p: &Path, v: &Json) -> io::Result<()> {
+    let mut bytes = serde_json::to_string_pretty(v)
+        .map(ascii_escape)
+        .map_err(io::Error::other)?
+        .into_bytes();
+    bytes.push(b'\n');
+    write_atomic(p, &bytes, true, false)
+}
+
+/// Atomically write owner-only bytes without following a destination link.
+pub fn write_private(p: &Path, bytes: &[u8]) -> io::Result<()> {
+    write_atomic(p, bytes, true, false)
 }
 
 pub fn obj(v: Option<&Json>) -> Option<&JMap> {
@@ -196,4 +360,78 @@ pub fn utc_now_iso() -> String {
         (sod % 3600) / 60,
         sod % 60
     )
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn test_dir(tag: &str) -> PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "qbranch-util-{}-{tag}-{}",
+            std::process::id(),
+            STAGING_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&p).unwrap();
+        p
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_json_write_preserves_existing_bytes() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = test_dir("write-failure");
+        let path = dir.join("settings.json");
+        fs::write(&path, b"old bytes\n").unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o500)).unwrap();
+        assert!(write_json(&path, &json!({"new": true})).is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"old bytes\n");
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn json_permissions_and_symlink_policy() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let dir = test_dir("permissions");
+        let target = dir.join("target.json");
+        fs::write(&target, "{}\n").unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o640)).unwrap();
+        let link = dir.join("link.json");
+        symlink(&target, &link).unwrap();
+
+        write_json(&link, &json!({"ordinary": true})).unwrap();
+        assert!(fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+            0o640
+        );
+
+        write_json_private(&link, &json!({"private": true})).unwrap();
+        assert!(!fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            fs::metadata(&link).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(read_json(&target).unwrap(), json!({"ordinary": true}));
+
+        let raw_link = dir.join("raw.json");
+        symlink(&target, &raw_link).unwrap();
+        let raw = b"{ \"legacy\" : true }\n";
+        write_private(&raw_link, raw).unwrap();
+        assert_eq!(fs::read(&raw_link).unwrap(), raw);
+        assert!(!fs::symlink_metadata(&raw_link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        fs::remove_dir_all(dir).unwrap();
+    }
 }

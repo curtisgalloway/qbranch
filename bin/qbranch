@@ -166,6 +166,7 @@ import os
 import re
 import shutil
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -250,8 +251,8 @@ def repo_name_from_url(url: str) -> str:
     return name
 
 
-def resolve_repo_local(repo_url: str) -> Path:
-    """Return the local root of repo_url, cloning if necessary.
+def resolve_repo_local(repo_url: str, update: bool = False) -> Path:
+    """Return the local root of repo_url; fetch only during an actual sync.
 
     Checks ~/src/<name> first (convention); if that's a git checkout it is
     used as-is. Otherwise clones into ~/.agents/skill-repos/<name>/ and pulls
@@ -264,6 +265,8 @@ def resolve_repo_local(repo_url: str) -> Path:
         return local
 
     cache = SKILL_REPOS_CACHE / name
+    if not update:
+        return cache
     if cache.is_dir() and (cache / ".git").exists():
         result = subprocess.run(
             ["git", "-C", str(cache), "pull", "--ff-only"],
@@ -276,6 +279,16 @@ def resolve_repo_local(repo_url: str) -> Path:
         SKILL_REPOS_CACHE.mkdir(parents=True, exist_ok=True)
         subprocess.run(["git", "clone", repo_url, str(cache)], check=True)
     return cache
+
+
+def prepare_skill_repos(manifest: dict) -> None:
+    """Fetch each repo-based source once, before planning an actual sync."""
+    seen: set[str] = set()
+    for entry in manifest.get("skills", []):
+        repo = entry.get("repo")
+        if repo is not None and repo not in seen:
+            resolve_repo_local(repo, update=True)
+            seen.add(repo)
 
 
 def resolve_skill_src(entry: dict) -> Path:
@@ -370,6 +383,36 @@ def load_manifest(name: str) -> tuple[dict, list[str]]:
     return migrate_manifest(name, json.loads(p.read_text()))
 
 
+def atomic_write(
+    path: Path, text: str, private: bool = False, follow_symlinks: bool = True
+) -> None:
+    """Replace a file only after its complete replacement has been written."""
+    if follow_symlinks and path.is_symlink():
+        path = path.resolve()
+    mode = 0o600
+    if not private and path.is_file() and not path.is_symlink():
+        mode = stat.S_IMODE(path.stat().st_mode)
+    with tempfile.TemporaryDirectory(prefix=".qbranch-write-", dir=path.parent) as tmp:
+        staged = Path(tmp) / "new"
+        with staged.open("x", encoding="utf-8") as stream:
+            staged.chmod(0o600)
+            stream.write(text)
+            stream.flush()
+            os.fsync(stream.fileno())
+        staged.chmod(mode)
+        os.replace(staged, path)
+
+
+def write_json(path: Path, value, private: bool = False) -> None:
+    """Write JSON atomically; private state replaces symlinks rather than targets."""
+    atomic_write(
+        path,
+        json.dumps(value, indent=2) + "\n",
+        private=private,
+        follow_symlinks=not private,
+    )
+
+
 def upgrade_manifests() -> int:
     """Rewrite every manifest at MANIFEST_SCHEMA. Never downgrades."""
     for name in list_manifests():
@@ -380,7 +423,7 @@ def upgrade_manifests() -> int:
         if json.dumps(upgraded, sort_keys=True) == before:
             print(f"  up to date  {name} (schema {upgraded.get('schema', 1)})")
             continue
-        p.write_text(json.dumps(upgraded, indent=2) + "\n")
+        write_json(p, upgraded)
         print(f"  upgraded    {name}: " + "; ".join(notes))
     print("\nCommit the rewritten manifests. A qbranch older than the "
           "schema they now carry refuses them.")
@@ -543,23 +586,51 @@ def copy_path(src: Path, dst: Path) -> None:
     Symlinks inside src are followed, so the copy stands on its own; the
     state file is left out of a copied skills directory.
     """
-    remove_path(dst)
     dst.parent.mkdir(parents=True, exist_ok=True)
-    if src.is_dir():
-        shutil.copytree(
-            src, dst, symlinks=False,
-            ignore=lambda _d, names: [n for n in names if n in COPY_IGNORE])
-    else:
-        shutil.copy(src, dst)
+    stage = Path(tempfile.mkdtemp(prefix=".qbranch-copy-", dir=dst.parent))
+    staged, backup = stage / "new", stage / "old"
+    keep_backup = False
+    try:
+        if src.is_dir():
+            shutil.copytree(
+                src,
+                staged,
+                symlinks=False,
+                ignore=lambda _d, names: [n for n in names if n in COPY_IGNORE],
+            )
+        else:
+            shutil.copy(src, staged)
+        had_old = dst.exists() or dst.is_symlink()
+        if had_old:
+            dst.rename(backup)
+        try:
+            staged.rename(dst)
+        except OSError:
+            if had_old:
+                try:
+                    backup.rename(dst)
+                except OSError as restore_error:
+                    keep_backup = True
+                    raise OSError(
+                        f"could not restore {dst}; previous copy retained at "
+                        f"{backup}: {restore_error}"
+                    ) from restore_error
+            raise
+    finally:
+        if not keep_backup:
+            shutil.rmtree(stage)
 
 
 def copy_up_to_date(src: Path, dst: Path) -> bool:
     """Whether dst is a faithful copy of src: same tree, same bytes."""
     if dst.is_symlink():
         return False
-    if src.is_dir():
-        return dst.is_dir() and trees_equal(src, dst)
-    return dst.is_file() and src.read_bytes() == dst.read_bytes()
+    try:
+        if src.is_dir():
+            return dst.is_dir() and trees_equal(src, dst)
+        return dst.is_file() and src.read_bytes() == dst.read_bytes()
+    except OSError:
+        return False
 
 
 def trees_equal(a: Path, b: Path) -> bool:
@@ -583,16 +654,20 @@ def save_state(state_path: Path, manifest_name: str, links: list[Path],
                copies: list[Path], link_mode: str | None,
                settings_applied: dict[str, dict]) -> None:
     """Write the state file. `settings_applied` maps state key -> policy."""
-    state_path.write_text(json.dumps({
-        "schema": STATE_SCHEMA,
-        "manifest": manifest_name,
-        "root": str(REPO),
-        "link_mode": link_mode,
-        "linked_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "links": sorted({str(p) for p in links}),
-        "copies": sorted({str(p) for p in copies}),
-        **{k: v or {} for k, v in sorted(settings_applied.items())},
-    }, indent=2) + "\n")
+    write_json(
+        state_path,
+        {
+            "schema": STATE_SCHEMA,
+            "manifest": manifest_name,
+            "root": str(REPO),
+            "link_mode": link_mode,
+            "linked_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "links": sorted({str(p) for p in links}),
+            "copies": sorted({str(p) for p in copies}),
+            **{k: v or {} for k, v in sorted(settings_applied.items())},
+        },
+        private=True,
+    )
     legacy = state_path.parent / LEGACY_STATE_FILE_NAME
     if legacy.is_file():
         legacy.unlink()
@@ -1081,6 +1156,7 @@ def add_skill_to_manifest(
     """Add skill_name to manifest. Returns True if manifest was modified."""
     p = REPO / "manifests" / f"{manifest_name}.json"
     manifest = json.loads(p.read_text())
+    migrate_manifest(manifest_name, deepcopy(manifest))
     existing = {e["name"] for e in manifest.get("skills", [])}
     if skill_name in existing:
         return False
@@ -1096,7 +1172,7 @@ def add_skill_to_manifest(
             "path": f"${{QBRANCH_ROOT}}/skills/{skill_name}",
         }
     manifest.setdefault("skills", []).append(entry)
-    p.write_text(json.dumps(manifest, indent=2) + "\n")
+    write_json(p, manifest)
     return True
 
 
@@ -1104,12 +1180,13 @@ def remove_skill_from_manifest(manifest_name: str, skill_name: str) -> bool:
     """Remove skill_name from manifest. Returns True if manifest was modified."""
     p = REPO / "manifests" / f"{manifest_name}.json"
     manifest = json.loads(p.read_text())
+    migrate_manifest(manifest_name, deepcopy(manifest))
     before = manifest.get("skills", [])
     after = [e for e in before if e.get("name") != skill_name]
     if len(after) == len(before):
         return False
     manifest["skills"] = after
-    p.write_text(json.dumps(manifest, indent=2) + "\n")
+    write_json(p, manifest)
     return True
 
 
@@ -1123,6 +1200,7 @@ def fix_renames_in_manifest(manifest_name: str) -> list[tuple[str, str, str]]:
     """
     p = REPO / "manifests" / f"{manifest_name}.json"
     manifest = json.loads(p.read_text())
+    migrate_manifest(manifest_name, deepcopy(manifest))
     skills = manifest.get("skills", [])
 
     changed: list[tuple[str, str, str]] = []
@@ -1158,7 +1236,7 @@ def fix_renames_in_manifest(manifest_name: str) -> list[tuple[str, str, str]]:
     if not changed:
         return []
     manifest["skills"] = skills
-    p.write_text(json.dumps(manifest, indent=2) + "\n")
+    write_json(p, manifest)
     return changed
 
 
@@ -1277,10 +1355,9 @@ def sync_settings(
         # its content into a real, app-owned file before merging into it.
         content = target.resolve().read_text() if target.exists() else "{}\n"
         notes.append(f"{agent} settings: converting symlink -> real file  {target}")
-        if not dry_run:
-            target.unlink()
-            target.write_text(content)
         live = json.loads(content)
+        if not dry_run:
+            atomic_write(target, content, private=True, follow_symlinks=False)
     elif target.is_file():
         try:
             live = json.loads(target.read_text())
@@ -1299,7 +1376,7 @@ def sync_settings(
                      f"from {len(fragments)} fragment(s)")
         if not dry_run:
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(json.dumps(live, indent=2) + "\n")
+            write_json(target, live)
     else:
         notes.append(f"{agent} settings: {target} up to date "
                      f"({len(fragments)} fragment(s))")
@@ -1557,6 +1634,7 @@ def manage_plugin(
     if not mpath.is_file():
         return notes, [f"manifest not found: {mpath}"]
     manifest = json.loads(mpath.read_text())
+    migrate_manifest(manifest_name, deepcopy(manifest))
     fragments = list(manifest.get("claude_settings", []))
     if not fragments:
         return notes, [f"manifest {manifest_name} lists no claude_settings fragments"]
@@ -1569,7 +1647,7 @@ def manage_plugin(
             raw = f"${{QBRANCH_ROOT}}/claude-code/settings/hosts/{manifest_name}.json"
             fragments.append(raw)
             manifest["claude_settings"] = fragments
-            mpath.write_text(json.dumps(manifest, indent=2) + "\n")
+            write_json(mpath, manifest)
             notes.append(f"added {raw} to manifest {manifest_name}")
     fpath = expand_path(raw)
     frag = json.loads(fpath.read_text()) if fpath.is_file() else {}
@@ -1603,7 +1681,7 @@ def manage_plugin(
                     f"extraKnownMarketplaces in {fpath} by hand")
 
     fpath.parent.mkdir(parents=True, exist_ok=True)
-    fpath.write_text(json.dumps(frag, indent=2) + "\n")
+    write_json(fpath, frag)
     notes.append(f"{pid} = {json.dumps(value)} in {fpath}")
     return notes, failures
 
@@ -2178,6 +2256,8 @@ def sync(args: argparse.Namespace, skills_target: Path, state_path: Path) -> int
         elif manifest.get(mkey):
             settings_notes.append(f"{agent} settings: skipped (not installed)")
 
+    if not args.dry_run:
+        prepare_skill_repos(manifest)
     desired, skipped = collect_desired(manifest, skills_target, claude_ok, agy_ok)
     taken_dsts = {dst for _, _, dst in desired}
     repo_entries, repo_warnings, missing_repos, discovered, _ = (
@@ -2244,12 +2324,9 @@ def sync(args: argparse.Namespace, skills_target: Path, state_path: Path) -> int
     create = "copy" if copying else "link"
     for label, src, dst in desired:
         if not src.exists() and not (args.dry_run and src == skills_target):
-            # A MISS never reaches `final`, so its dst never lands in the
-            # state file — the stale-removal pass above (which walks
-            # previous_dsts) can therefore never reclaim a symlink left
-            # here, and it would dangle forever. Clear it as part of the
-            # failure instead. Only a symlink whose target is gone is
-            # touched; a working link is left for the WARN/relink paths.
+            # Clear a dangling link as part of the missing-source failure.
+            # A working link or tracked copy is retained, along with its
+            # ownership record, so a later sync can recover or remove it.
             note = "source missing"
             if dst.is_symlink() and not dst.exists():
                 note = "source missing (will remove stale link)"
@@ -2270,6 +2347,15 @@ def sync(args: argparse.Namespace, skills_target: Path, state_path: Path) -> int
             # a link if the mode changed.
             if not copying:
                 actions.append(("relink", label, src, dst, "was: copy"))
+            elif src == skills_target and any(
+                is_under(a_dst, skills_target)
+                and (
+                    op in {"remove", "copy", "link", "relink", "migrate"}
+                    or (op == "MISS" and a_dst.is_symlink() and not a_dst.exists())
+                )
+                for op, _, _, a_dst, _ in actions
+            ):
+                actions.append(("copy", label, src, dst, "refresh"))
             elif copy_up_to_date(src, dst):
                 actions.append(("ok", label, src, dst, "copy"))
             else:
@@ -2350,6 +2436,7 @@ def sync(args: argparse.Namespace, skills_target: Path, state_path: Path) -> int
     had_error = bool(settings_failures)
     failures: list[str] = list(settings_failures)
     for op, label, src, dst, note in actions:
+        succeeded = False
         try:
             if op == "remove":
                 remove_path(dst)
@@ -2394,11 +2481,22 @@ def sync(args: argparse.Namespace, skills_target: Path, state_path: Path) -> int
                 print(f"ERROR: {msg}", file=sys.stderr)
                 failures.append(msg)
                 had_error = True
+            succeeded = True
         except OSError as e:
             msg = f"{label} ({dst}): {e}"
             print(f"ERROR: {msg}", file=sys.stderr)
             failures.append(msg)
             had_error = True
+        # A failed action must not forget ownership of what it left behind.
+        if (
+            dst in previous_dsts
+            and (dst.exists() or dst.is_symlink())
+            and (op != "remove" or not succeeded)
+        ):
+            if dst not in final:
+                final.append(dst)
+            if dst in previous_copies and not dst.is_symlink() and dst not in copies:
+                copies.append(dst)
 
     # Marketplaces come before the plugins that need them (planned in that
     # order). Each call may clone a repo, so show progress per item.

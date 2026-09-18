@@ -12,7 +12,9 @@ use crate::plugins::{plan_claude_plugins, run_plugin_action, PluginAction};
 use crate::proc;
 use crate::rename;
 use crate::settings::sync_settings;
-use crate::skills::{collect_desired, collect_repo_skills, unlinked_repo_skill_dirs};
+use crate::skills::{
+    collect_desired, collect_repo_skills, prepare_skill_repos, unlinked_repo_skill_dirs,
+};
 use crate::state::{
     choose_manifest, load_state, previous_copies, previous_links, resolve_root, save_state,
 };
@@ -309,6 +311,9 @@ pub fn run(ctx: &mut Ctx, args: &SyncArgs) -> i32 {
         }
     }
 
+    if !args.dry_run {
+        prepare_skill_repos(ctx, &manifest);
+    }
     let (mut desired, skipped) = collect_desired(ctx, &manifest, &skills_target, claude_ok, agy_ok);
     let taken: HashSet<PathBuf> = desired.iter().map(|d| d.dst.clone()).collect();
     let repo = collect_repo_skills(ctx, &manifest, &skills_target, &taken);
@@ -411,12 +416,9 @@ pub fn run(ctx: &mut Ctx, args: &SyncArgs) -> i32 {
         let source_missing = !d.src.exists();
         let target_only_planned = args.dry_run && d.src == skills_target;
         if source_missing && !target_only_planned {
-            // A MISS never reaches `final`, so its dst never lands in the
-            // state file; the stale-removal pass above (which walks
-            // previous_dsts) can therefore never reclaim a symlink left
-            // here, and it would dangle forever. Clear it as part of the
-            // failure instead. Only a symlink whose target is gone is
-            // touched; a working link is left for the WARN/relink paths.
+            // Clear a dangling link as part of the missing-source failure.
+            // A working link or tracked copy is retained, along with its
+            // ownership record, so a later sync can recover or remove it.
             let base = if paths::is_symlink(&d.dst) && !d.dst.exists() {
                 "source missing (will remove stale link)"
             } else {
@@ -462,6 +464,14 @@ pub fn run(ctx: &mut Ctx, args: &SyncArgs) -> i32 {
             // a link if the mode changed.
             if !copying {
                 actions.push(action("relink", "was: copy".to_string()));
+            } else if d.src == skills_target
+                && actions.iter().any(|a| {
+                    paths::is_under(&a.dst, &skills_target)
+                        && (matches!(a.op, "remove" | "copy" | "link" | "relink" | "migrate")
+                            || (a.op == "MISS" && paths::is_symlink(&a.dst) && !a.dst.exists()))
+                })
+            {
+                actions.push(action("copy", "refresh".to_string()));
             } else if copy_up_to_date(&d.src, &d.dst) {
                 actions.push(action("ok", "copy".to_string()));
             } else {
@@ -633,6 +643,9 @@ pub fn run(ctx: &mut Ctx, args: &SyncArgs) -> i32 {
                             &mut failures,
                             &mut had_error,
                         );
+                        if previous_dsts.contains(&a.dst) {
+                            final_links.push(a.dst.clone());
+                        }
                         continue;
                     }
                     msg.push_str(&format!(" (removed stale link at {})", display(&a.dst)));
@@ -644,12 +657,28 @@ pub fn run(ctx: &mut Ctx, args: &SyncArgs) -> i32 {
             }
             _ => Ok(()),
         };
+        let succeeded = result.is_ok();
         if let Err(e) = result {
             fail(
                 format!("{} ({}): {e}", a.label, display(&a.dst)),
                 &mut failures,
                 &mut had_error,
             );
+        }
+        // A failed action must not forget ownership of what it left behind.
+        if previous_dsts.contains(&a.dst)
+            && (a.dst.exists() || paths::is_symlink(&a.dst))
+            && (a.op != "remove" || !succeeded)
+        {
+            if !final_links.contains(&a.dst) {
+                final_links.push(a.dst.clone());
+            }
+            if prev_copies.contains(&a.dst)
+                && !paths::is_symlink(&a.dst)
+                && !copies.contains(&a.dst)
+            {
+                copies.push(a.dst.clone());
+            }
         }
     }
 

@@ -1,0 +1,5 @@
+{
+  "manifest": "refresh",
+  "args": ["--link-mode", "copy"],
+  "mkdirs": ["home/.gemini/antigravity-cli"]
+}

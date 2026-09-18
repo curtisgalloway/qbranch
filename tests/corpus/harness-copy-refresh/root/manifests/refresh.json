@@ -1,0 +1,11 @@
+{
+  "schema": 2,
+  "name": "refresh",
+  "skill_repos": [],
+  "skills": [
+    {"name": "alpha", "path": "${QBRANCH_ROOT}/skills/alpha"}
+  ],
+  "links": [],
+  "claude_settings": [],
+  "agy_settings": []
+}
