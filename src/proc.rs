@@ -158,9 +158,57 @@ pub fn exec(argv: &[String]) -> ! {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    fn shell(command: &str) -> Vec<String> {
+        #[cfg(windows)]
+        return vec![
+            "cmd.exe".to_string(),
+            "/D".to_string(),
+            "/C".to_string(),
+            command.to_string(),
+        ];
+        #[cfg(not(windows))]
+        return vec!["/bin/sh".to_string(), "-c".to_string(), command.to_string()];
+    }
+
+    #[test]
+    fn captures_both_output_streams_exactly() {
+        #[cfg(windows)]
+        let argv =
+            shell(r#"<nul set /p "=stdout exact"&<nul set /p "=stderr exact" 1>&2&exit /b 0"#);
+        #[cfg(not(windows))]
+        let argv = shell("printf 'stdout exact'; printf 'stderr exact' >&2");
+        let output = run_capture(&argv, None).unwrap();
+        assert_eq!(output.code, Some(0));
+        assert_eq!(output.stdout, "stdout exact");
+        assert_eq!(output.stderr, "stderr exact");
+    }
+
+    #[test]
+    fn reports_nonzero_exit() {
+        let output = run_capture(&shell("exit 7"), None).unwrap();
+        assert_eq!(output.code, Some(7));
+        assert!(!output.ok());
+        assert_eq!(output.code_str(), "7");
+    }
+
+    #[test]
+    fn direct_child_timeout_is_enforced() {
+        let started = Instant::now();
+        #[cfg(windows)]
+        let argv = shell("ping -n 3 127.0.0.1 >nul");
+        #[cfg(not(windows))]
+        let argv = shell("sleep 2");
+        let error = match run_capture(&argv, Some(Duration::from_millis(100))) {
+            Err(error) => error,
+            Ok(_) => panic!("command unexpectedly completed"),
+        };
+        assert!(error.contains("timed out"));
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
 
     #[cfg(unix)]
     #[test]

@@ -76,6 +76,16 @@ class RegressionTest(unittest.TestCase):
 
         alpha = self.root / "skills" / "alpha" / "SKILL.md"
         alpha.write_text("alpha changed\n", encoding="utf-8")
+        self.assert_ok(self.run_tool())
+        for relative in (
+            Path(".claude/skills"),
+            Path(".gemini/antigravity-cli/skills"),
+        ):
+            self.assertEqual(
+                (self.home / relative / "alpha" / "SKILL.md").read_text(),
+                "alpha changed\n",
+            )
+        self.assert_converged()
         beta = self.root / "skills" / "beta"
         beta.mkdir(exist_ok=True)
         (beta / "SKILL.md").write_text("beta added\n", encoding="utf-8")
@@ -227,6 +237,7 @@ class RegressionTest(unittest.TestCase):
             ["--remove-skill", "alpha"],
             ["--fix-renames"],
             ["--manage-plugin", "demo@example", "--in", "base"],
+            ["--manage-plugin", "demo@example", "--in", "host"],
         ]
         for command in commands:
             with self.subTest(command=command):
@@ -245,6 +256,36 @@ class RegressionTest(unittest.TestCase):
                 self.assertIn("understands up to schema", result.stderr)
                 self.assertEqual(self.manifest.read_bytes(), manifest_before)
                 self.assertEqual(fragment.read_bytes(), fragment_before)
+
+    @unittest.skipIf(WINDOWS, "Unix symlink setup")
+    def test_legacy_settings_conversion_preserves_source_and_raw_bytes(self) -> None:
+        self.set_copy_mode()
+        self.write_manifest()
+        (self.root / "claude-code/settings.json").write_text("{}\n")
+        source = self.root / "legacy-settings.json"
+        original = b'{ "appTheme" : "dark" }\n'
+        source.write_bytes(original)
+        target = self.home / ".claude/settings.json"
+        target.unlink()
+        target.symlink_to(source)
+        self.assert_ok(self.run_tool())
+        self.assertFalse(target.is_symlink())
+        self.assertEqual(target.read_bytes(), original)
+        self.assertEqual(source.read_bytes(), original)
+        self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o600)
+
+    @unittest.skipIf(WINDOWS, "Unix symlink setup")
+    def test_invalid_legacy_settings_are_left_untouched(self) -> None:
+        self.set_copy_mode()
+        self.write_manifest()
+        source = self.root / "legacy-settings.json"
+        source.write_bytes(b"invalid JSON\n")
+        target = self.home / ".claude/settings.json"
+        target.unlink()
+        target.symlink_to(source)
+        self.assertNotEqual(self.run_tool().returncode, 0)
+        self.assertTrue(target.is_symlink())
+        self.assertEqual(source.read_bytes(), b"invalid JSON\n")
 
     def git(self, cwd: Path, *args: str) -> subprocess.CompletedProcess:
         env = {**self.sb.env, **run_corpus.GIT_SETUP_ENV}
@@ -270,6 +311,7 @@ class RegressionTest(unittest.TestCase):
             ("--dry-run",),
             ("--audit", "--json"),
             ("--audit",),
+            ("--fix-renames",),
         )
         for args in reports:
             result = self.run_tool(*args)

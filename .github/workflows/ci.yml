@@ -39,6 +39,8 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
+      - name: Unit tests, Python reference
+        run: python tests/test_units.py
       - run: cargo build --release
       - name: Corpus, Python reference
         if: runner.os != 'Windows'

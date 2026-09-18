@@ -215,6 +215,16 @@ fn atomic_replace(source: &Path, destination: &Path) -> io::Result<()> {
 }
 
 fn write_atomic(p: &Path, bytes: &[u8], private: bool, follow_symlink: bool) -> io::Result<()> {
+    write_atomic_with_replace(p, bytes, private, follow_symlink, atomic_replace)
+}
+
+fn write_atomic_with_replace(
+    p: &Path,
+    bytes: &[u8],
+    private: bool,
+    follow_symlink: bool,
+    replace: impl FnOnce(&Path, &Path) -> io::Result<()>,
+) -> io::Result<()> {
     let destination = if follow_symlink {
         resolved_write_destination(p)
     } else {
@@ -249,7 +259,7 @@ fn write_atomic(p: &Path, bytes: &[u8], private: bool, follow_symlink: bool) -> 
     #[cfg(not(unix))]
     let _ = private;
     drop(file);
-    atomic_replace(&staged, &destination)
+    replace(&staged, &destination)
 }
 
 pub fn write_json(p: &Path, v: &Json) -> io::Result<()> {
@@ -362,9 +372,10 @@ pub fn utc_now_iso() -> String {
     )
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use serde_json::json;
 
     fn test_dir(tag: &str) -> PathBuf {
@@ -377,17 +388,17 @@ mod tests {
         p
     }
 
-    #[cfg(unix)]
     #[test]
     fn failed_json_write_preserves_existing_bytes() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = test_dir("write-failure");
         let path = dir.join("settings.json");
         fs::write(&path, b"old bytes\n").unwrap();
-        fs::set_permissions(&dir, fs::Permissions::from_mode(0o500)).unwrap();
-        assert!(write_json(&path, &json!({"new": true})).is_err());
+        let result = write_atomic_with_replace(&path, b"new bytes\n", false, true, |_, _| {
+            Err(io::Error::other("injected publish failure"))
+        });
+        assert!(result.is_err());
         assert_eq!(fs::read(&path).unwrap(), b"old bytes\n");
-        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
         fs::remove_dir_all(dir).unwrap();
     }
 
@@ -396,6 +407,26 @@ mod tests {
     fn json_permissions_and_symlink_policy() {
         use std::os::unix::fs::{symlink, PermissionsExt};
         let dir = test_dir("permissions");
+        let new_private = dir.join("new-private.json");
+        write_json_private(&new_private, &json!({"new": true})).unwrap();
+        assert_eq!(
+            fs::metadata(&new_private).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+
+        let existing_private = dir.join("existing-private.json");
+        fs::write(&existing_private, "{}\n").unwrap();
+        fs::set_permissions(&existing_private, fs::Permissions::from_mode(0o644)).unwrap();
+        write_json_private(&existing_private, &json!({"private": true})).unwrap();
+        assert_eq!(
+            fs::metadata(&existing_private)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+
         let target = dir.join("target.json");
         fs::write(&target, "{}\n").unwrap();
         fs::set_permissions(&target, fs::Permissions::from_mode(0o640)).unwrap();

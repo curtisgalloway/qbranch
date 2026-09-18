@@ -36,11 +36,31 @@ Windows and Linux execution remains covered by CI; local validation runs on macO
 - Python and Rust: 31/31 corpus plans pass.
 - Apply/report parity: 279/279 runs identical.
 - Each implementation: 27/27 applicable cases converge in both default and copy modes.
-- Integration regressions: eight pass for Python; seven pass for Rust with the
+- Integration regressions: ten pass for Python; nine pass for Rust with the
   Python-only fault-injection test skipped.
-- Rust unit tests: 11 pass; the opt-in private-checkout probe remains ignored.
+- Python unit tests: 15 pass, including deterministic fault injection.
+- Rust unit tests: 19 pass; the opt-in private-checkout probe remains ignored.
 - Rust formatting and Clippy pass, including Windows-target Clippy for all targets.
 - Changed Python code formatted with Pyink at 88 columns; whitespace checks pass.
+
+## Test coverage follow-up
+
+The unit suites now exercise copy publication failures, rollback failures with recovery
+backups, atomic-write partial-write, publication and flush failures, private/new/preserved permissions,
+symlink handling, successful and timed-out subprocesses, schema guards and read-only
+repository resolution. Fault injection is local to each test; production has no global
+failure switches. Portable Rust tests also run on Windows, with Unix-only permissions
+and symlink checks gated individually.
+
+F2 is verified by independent update, add and remove steps against both harnesses, each
+followed by a convergence check. F5 additionally has an injected failed-removal/retry
+test that checks both ownership lists. F6 checks valid legacy settings conversion without
+changing source bytes and invalid legacy settings without removing their symlink.
+F7 checks both plugin fragment targets and all skill edit commands; F8 checks audits,
+dry runs and rename fixes before and after a cache exists. These command-level contracts
+remain integration tests so both implementations are exercised through the real CLI.
+F9 and F10 are documentation corrections verified against package layouts and workflow
+conditions, not runtime unit-test claims.
 
 ## Original verified findings
 

@@ -177,6 +177,7 @@ python3 tests/run_parity.py    # apply every case with both and diff what they l
 python3 tests/run_corpus.py --apply           # apply for real; the next dry run must be a no-op
 QBRANCH_LINK_MODE=copy python3 tests/run_corpus.py --apply   # the same in copy mode
 cargo test                   # Rust I/O, timeout and rename regressions
+python3 tests/test_units.py   # Python fault-injection unit tests
 python3 tests/run_regressions.py             # multi-step Python regressions
 QBRANCH_BIN=target/release/qbranch python3 tests/run_regressions.py
 ```
