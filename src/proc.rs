@@ -177,14 +177,14 @@ mod tests {
     #[test]
     fn captures_both_output_streams_exactly() {
         #[cfg(windows)]
-        let argv =
-            shell(r#"<nul set /p "=stdout exact"&<nul set /p "=stderr exact" 1>&2&exit /b 0"#);
+        let argv = shell("echo stdout exact&1>&2 echo stderr exact&exit /b 0");
         #[cfg(not(windows))]
         let argv = shell("printf 'stdout exact'; printf 'stderr exact' >&2");
         let output = run_capture(&argv, None).unwrap();
         assert_eq!(output.code, Some(0));
-        assert_eq!(output.stdout, "stdout exact");
-        assert_eq!(output.stderr, "stderr exact");
+        let newline = if cfg!(windows) { "\r\n" } else { "" };
+        assert_eq!(output.stdout, format!("stdout exact{newline}"));
+        assert_eq!(output.stderr, format!("stderr exact{newline}"));
     }
 
     #[test]
