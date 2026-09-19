@@ -1,0 +1,3 @@
+{
+  "stdout": "note: ignoring 'tree/main' \u2014 a skills entry records no branch, so the checkout's default is used\nskill 'hdmicap' from https://github.com/example/paniolo.git, path skills/hdmicap\nnote: <CASE>/home/src/paniolo not found \u2014 will clone on sync\n'hdmicap' added to manifest 'laptop'\nRun qbranch to apply.\n"
+}

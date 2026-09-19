@@ -68,7 +68,11 @@ struct Cli {
     list: bool,
 
     /// Add SKILL to the target manifest(s) and exit. Path defaults to
-    /// ${QBRANCH_ROOT}/skills/SKILL.
+    /// ${QBRANCH_ROOT}/skills/SKILL. SKILL may instead be a URL:
+    /// https://<host>/<owner>/<repo>[/<path>] for a repo cloned over HTTPS
+    /// (no account needed for a public one),
+    /// git://<host>/<owner>/<repo>[/<path>] for the same repo over SSH, or
+    /// git://<local-name>[/<path>] to take the URL from ~/src/<local-name>.
     #[arg(short = 'a', long, value_name = "SKILL")]
     add_skill: Option<String>,
 
@@ -76,7 +80,8 @@ struct Cli {
     #[arg(short = 'r', long, value_name = "SKILL")]
     remove_skill: Option<String>,
 
-    /// Git repo URL for the skill (used with --add-skill). On sync,
+    /// Git repo URL for the skill (used with --add-skill), recorded and
+    /// cloned as given, so an https:// URL needs no key. On sync,
     /// ~/src/<repo-name> is checked first; otherwise the repo is cloned to
     /// ~/.agents/skill-repos/.
     #[arg(long, value_name = "URL")]
@@ -342,9 +347,14 @@ fn edit_skill(ctx: &Ctx, args: &Cli, state: &JMap) -> i32 {
     let mut repo_url = args.repo.clone();
     let mut skill_path_arg = args.skill_path.clone();
 
-    if adding && skill_name.starts_with("git://") {
-        let (n, u, p) = manifest::parse_git_skill_url(ctx, &skill_name);
+    if adding
+        && manifest::SKILL_URL_PREFIXES
+            .iter()
+            .any(|pre| skill_name.starts_with(pre))
+    {
+        let (n, u, p) = manifest::parse_skill_url(ctx, &skill_name);
         skill_name = n;
+        println!("skill '{skill_name}' from {u}, path {p}");
         repo_url = Some(u);
         skill_path_arg = Some(p);
     }

@@ -1,0 +1,10 @@
+{
+  "schema": 2,
+  "name": "laptop",
+  "description": "corpus case laptop: an empty manifest --add-skill writes into",
+  "skill_repos": [],
+  "skills": [],
+  "links": [],
+  "claude_settings": [],
+  "agy_settings": []
+}

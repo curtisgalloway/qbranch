@@ -1,0 +1,6 @@
+{
+  "manifest": "repo",
+  "mkdirs": [
+    "home/src/local-repo/.git"
+  ]
+}

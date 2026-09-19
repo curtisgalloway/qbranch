@@ -59,7 +59,8 @@ them.
   "skill_repos": [ { "path": "${HOME}/src/public-skills", "plugins": ["dev-tools"] } ],
   "skills": [
     { "name": "learn", "path": "${QBRANCH_ROOT}/skills/learn" },
-    { "name": "push", "repo": "git@github.com:me/private-skills.git", "path": "skills/push" }
+    { "name": "push", "repo": "git@github.com:me/private-skills.git", "path": "skills/push" },
+    { "name": "learn", "repo": "https://github.com/me/public-skills.git", "path": "skills/learn" }
   ],
   "links": [
     { "src": "${QBRANCH_ROOT}/claude-code/CLAUDE.md", "dst": "${HOME}/.claude/CLAUDE.md" }
@@ -80,7 +81,10 @@ them.
   at that path; a missing one is a note in the plan, not an error.
 - `skills`: `{name, path}` for a local path, or `{name, repo, path}` for a path inside a git
   repo. For the repo form `~/src/<repo-name>` is used when it is a checkout; otherwise the
-  repo is cloned to `~/.agents/skill-repos/` and pulled on every actual sync. Dry runs,
+  repo is cloned to `~/.agents/skill-repos/` and pulled on every actual sync. `repo` is
+  cloned exactly as written, so an `https://` URL reaches a public repo with no account and
+  no key, while an SSH URL (`git@host:owner/repo.git`) needs one on every machine that
+  syncs the manifest — prefer https for anything public. Dry runs,
   audits and rename fixes only inspect existing checkouts; an uncached source appears as
   missing in a dry-run plan and is fetched when the sync is applied. On a name collision a
   manifest skill wins, then earlier repos over later ones.
@@ -117,7 +121,12 @@ qbranch                          sync with the remembered root and manifest
 qbranch --dry-run [--json]       the plan, changing nothing; JSON for machine reading
 qbranch --list                   manifests in the config root
 qbranch --add-skill NAME         add a skill to the remembered manifest; --all for every manifest
-qbranch --add-skill git://REPO/skills/NAME   the same as a repo entry, from a local checkout
+qbranch --add-skill https://HOST/OWNER/REPO/PATH   a repo entry cloned over https; a public
+                                 repo needs no account. A pasted GitHub web URL works too:
+                                 its /tree/<branch>/ is dropped, since an entry has no branch
+qbranch --add-skill git://HOST/OWNER/REPO/PATH     the same over SSH, which needs a key
+qbranch --add-skill git://REPO/skills/NAME   the same as a repo entry, from a local checkout,
+                                 taking the URL from ~/src/REPO's origin
 qbranch --remove-skill NAME
 qbranch --fix-renames            repoint entries whose skill directory moved in its
                                  repo; --all for every manifest

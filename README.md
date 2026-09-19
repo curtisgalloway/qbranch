@@ -109,7 +109,9 @@ qbranch --list                # manifests in the config root
 qbranch --plugin-status       # managed / unmanaged plugins on this machine
 qbranch --manage-plugin <id> --in base|host [--value false]
 qbranch --audit               # collisions, double loads, duplicate MCP servers, context budget
-qbranch --add-skill <name> | git://<repo>/<path>    # add a skill to the remembered manifest
+qbranch --add-skill <name>    # add a skill to the remembered manifest
+qbranch --add-skill https://github.com/<owner>/<repo>/<path>   # ...from a public repo, over https
+qbranch --add-skill git://<host>/<owner>/<repo>/<path>         # ...over SSH, which needs a key
 qbranch --upgrade-manifests   # rewrite older manifests at the current schema
 qbranch --version
 qbranch --skill qbranch       # the operating guide for an agent; --skill alone lists the skills
@@ -141,7 +143,8 @@ A manifest:
     { "path": "${HOME}/src/private-skills" }
   ],
   "skills": [
-    { "name": "push", "repo": "git@github.com:me/private-skills.git", "path": "skills/push" }
+    { "name": "push", "repo": "git@github.com:me/private-skills.git", "path": "skills/push" },
+    { "name": "learn", "repo": "https://github.com/me/public-skills.git", "path": "skills/learn" }
   ],
   "links": [
     { "src": "${QBRANCH_ROOT}/claude-code/CLAUDE.md", "dst": "${HOME}/.claude/CLAUDE.md" }
