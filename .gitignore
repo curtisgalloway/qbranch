@@ -2,3 +2,5 @@
 *.swp
 __pycache__/
 target/
+# Host names and reach recipes for the release train; never committed.
+RELEASE-TRAIN.local.md
