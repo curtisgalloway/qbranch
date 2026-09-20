@@ -261,12 +261,62 @@ pub fn fix_renames_in_manifest(ctx: &Ctx, manifest_name: &str) -> Vec<(String, S
     changed
 }
 
-/// Parse a git:// shorthand into (skill_name, repo_url, skill_path).
+/// The URL schemes `--add-skill` accepts in place of a skill name.
+pub const SKILL_URL_PREFIXES: [&str; 2] = ["git://", "https://"];
+
+/// (skill_name, repo_url, skill_path) from a parsed URL's trailing path.
+fn skill_from_parts(
+    repo_name: &str,
+    repo_url: String,
+    path_parts: &[&str],
+) -> (String, String, String) {
+    let skill_path = if path_parts.is_empty() {
+        format!("skills/{repo_name}")
+    } else {
+        path_parts.join("/")
+    };
+    let skill_name = path_parts
+        .last()
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| repo_name.to_string());
+    (skill_name, repo_url, skill_path)
+}
+
+/// Drop the tree/<ref> or blob/<ref> of a pasted GitHub web URL.
+fn strip_web_ref<'a, 'b>(path_parts: &'a [&'b str]) -> &'a [&'b str] {
+    if path_parts.len() >= 2 && (path_parts[0] == "tree" || path_parts[0] == "blob") {
+        println!(
+            "note: ignoring '{}/{}' — a skills entry records no branch, so the checkout's default is used",
+            path_parts[0], path_parts[1]
+        );
+        return &path_parts[2..];
+    }
+    path_parts
+}
+
+/// Parse a skill URL shorthand into (skill_name, repo_url, skill_path).
 ///
 /// Short form `git://<local-name>[/<path>]` (first segment has no dot) looks
-/// up ~/src/<name> for the remote URL. Full form
-/// `git://<host>/<owner>/<repo>[/<path>]` constructs git@host:owner/repo.git.
-pub fn parse_git_skill_url(ctx: &Ctx, arg: &str) -> (String, String, String) {
+/// up ~/src/<name> for the remote URL. SSH form
+/// `git://<host>/<owner>/<repo>[/<path>]` constructs git@host:owner/repo.git,
+/// which needs a key. HTTPS form `https://<host>/<owner>/<repo>[.git][/<path>]`
+/// is kept as typed, so a public repo clones with no account and no key; a
+/// GitHub web URL pastes as-is, its /tree/<ref>/ dropped.
+pub fn parse_skill_url(ctx: &Ctx, arg: &str) -> (String, String, String) {
+    if let Some(rest) = arg.strip_prefix("https://") {
+        let parts: Vec<&str> = rest.split('/').filter(|p| !p.is_empty()).collect();
+        if parts.len() < 3 {
+            die(format!(
+                "invalid https:// skill URL: '{arg}'\nexpected: https://<host>/<owner>/<repo>[/<path/to/skill>]"
+            ));
+        }
+        let (host, owner, repo_part) = (parts[0], parts[1], parts[2]);
+        let repo_name = repo_part.strip_suffix(".git").unwrap_or(repo_part);
+        let repo_url = format!("https://{host}/{owner}/{repo_name}.git");
+        let path_parts = strip_web_ref(&parts[3..]);
+        return skill_from_parts(repo_name, repo_url, path_parts);
+    }
+
     let rest = &arg["git://".len()..];
     let parts: Vec<&str> = rest.split('/').collect();
     if !parts[0].contains('.') {
@@ -293,17 +343,7 @@ pub fn parse_git_skill_url(ctx: &Ctx, arg: &str) -> (String, String, String) {
                 out.stderr.trim()
             ));
         }
-        let repo_url = out.stdout.trim().to_string();
-        let skill_path = if path_parts.is_empty() {
-            format!("skills/{repo_name}")
-        } else {
-            path_parts.join("/")
-        };
-        let skill_name = path_parts
-            .last()
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| repo_name.to_string());
-        return (skill_name, repo_url, skill_path);
+        return skill_from_parts(repo_name, out.stdout.trim().to_string(), path_parts);
     }
     if parts.len() < 3 {
         die(format!(
@@ -311,19 +351,9 @@ pub fn parse_git_skill_url(ctx: &Ctx, arg: &str) -> (String, String, String) {
         ));
     }
     let (host, owner, repo_part) = (parts[0], parts[1], parts[2]);
-    let path_parts = &parts[3..];
     let repo_name = repo_part.strip_suffix(".git").unwrap_or(repo_part);
     let repo_url = format!("git@{host}:{owner}/{repo_name}.git");
-    let skill_path = if path_parts.is_empty() {
-        format!("skills/{repo_name}")
-    } else {
-        path_parts.join("/")
-    };
-    let skill_name = path_parts
-        .last()
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| repo_name.to_string());
-    (skill_name, repo_url, skill_path)
+    skill_from_parts(repo_name, repo_url, &parts[3..])
 }
 
 /// `~/src/<name>` for a repo URL, the conventional local checkout.
@@ -339,4 +369,54 @@ pub fn manifest_skill_srcs(ctx: &Ctx, manifest: &JMap) -> Vec<PathBuf> {
         .filter(|e| !e.contains_key("repo"))
         .map(|e| paths::resolve(&ctx.expand(&util::py_get_str(e, "path"))))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Only the https:// and full git:// forms are covered here: the short
+    // form reads a real checkout's origin, which the corpus exercises.
+    fn parse(arg: &str) -> (String, String, String) {
+        parse_skill_url(&Ctx::from_env(), arg)
+    }
+
+    #[test]
+    fn https_url_is_cloned_as_typed() {
+        let (name, url, path) = parse("https://github.com/user/paniolo/skills/hdmicap");
+        assert_eq!(name, "hdmicap");
+        assert_eq!(url, "https://github.com/user/paniolo.git");
+        assert_eq!(path, "skills/hdmicap");
+    }
+
+    #[test]
+    fn https_url_without_a_path_defaults_to_the_repo_name() {
+        let (name, url, path) = parse("https://github.com/user/paniolo.git");
+        assert_eq!(name, "paniolo");
+        assert_eq!(url, "https://github.com/user/paniolo.git");
+        assert_eq!(path, "skills/paniolo");
+    }
+
+    #[test]
+    fn a_pasted_web_url_drops_its_tree_ref() {
+        let (name, url, path) = parse("https://github.com/user/paniolo/tree/main/skills/hdmicap");
+        assert_eq!(name, "hdmicap");
+        assert_eq!(url, "https://github.com/user/paniolo.git");
+        assert_eq!(path, "skills/hdmicap");
+    }
+
+    #[test]
+    fn a_full_git_url_still_means_ssh() {
+        let (name, url, path) = parse("git://github.com/user/paniolo/skills/hdmicap");
+        assert_eq!(name, "hdmicap");
+        assert_eq!(url, "git@github.com:user/paniolo.git");
+        assert_eq!(path, "skills/hdmicap");
+    }
+
+    #[test]
+    fn repo_names_come_off_either_url_form() {
+        assert_eq!(repo_name_from_url("https://github.com/u/p.git"), "p");
+        assert_eq!(repo_name_from_url("https://github.com/u/p"), "p");
+        assert_eq!(repo_name_from_url("git@github.com:u/p.git"), "p");
+    }
 }

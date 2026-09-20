@@ -1,0 +1,6 @@
+{
+  "manifest": "laptop",
+  "args": ["--add-skill",
+           "https://github.com/example/paniolo/tree/main/skills/hdmicap"],
+  "apply": false
+}

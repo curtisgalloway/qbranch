@@ -47,7 +47,7 @@ A manifest is a JSON file at manifests/<name>.json with this shape:
       ],
       "skills": [
         { "name": "learn", "path": "${QBRANCH_ROOT}/skills/learn" },
-        { "name": "paniolo", "repo": "git@github.com:user/paniolo.git",
+        { "name": "paniolo", "repo": "https://github.com/user/paniolo.git",
           "path": "skills/paniolo" }
       ],
       "links": [
@@ -122,7 +122,9 @@ Skills entries support two source forms:
 For repo-based entries the script looks up ~/src/<repo-name> first (by
 convention); if that directory is a git checkout it is used directly.
 Otherwise the repo is cloned (and kept updated) under
-~/.agents/skill-repos/<repo-name>/.
+~/.agents/skill-repos/<repo-name>/. The URL is cloned exactly as the
+manifest records it, so an https:// URL reaches a public repo without an
+account or a key, and an SSH URL needs one.
 
 Both local path and dst fields support:
   - ${QBRANCH_ROOT}       (the config root)
@@ -251,6 +253,16 @@ def repo_name_from_url(url: str) -> str:
     return name
 
 
+def clone_failed_message(repo_url: str) -> str:
+    """Why the clone failed, and the way out when it asked for credentials."""
+    msg = f"git clone {repo_url} failed"
+    if repo_url.startswith("git@") or repo_url.startswith("ssh://"):
+        msg += ("\nthat URL clones over SSH, so git wants a key for the host; "
+                "a public repo can be named as https://<host>/<owner>/<repo> "
+                "instead, which needs no account")
+    return msg
+
+
 def resolve_repo_local(repo_url: str, update: bool = False) -> Path:
     """Return the local root of repo_url; fetch only during an actual sync.
 
@@ -277,7 +289,8 @@ def resolve_repo_local(repo_url: str, update: bool = False) -> Path:
                   file=sys.stderr)
     else:
         SKILL_REPOS_CACHE.mkdir(parents=True, exist_ok=True)
-        subprocess.run(["git", "clone", repo_url, str(cache)], check=True)
+        if subprocess.run(["git", "clone", repo_url, str(cache)]).returncode != 0:
+            sys.exit(clone_failed_message(repo_url))
     return cache
 
 
@@ -298,20 +311,61 @@ def resolve_skill_src(entry: dict) -> Path:
     return expand_path(entry["path"])
 
 
-def parse_git_skill_url(arg: str) -> tuple[str, str, str]:
-    """Parse a git:// shorthand → (skill_name, repo_url, skill_path).
+SKILL_URL_PREFIXES = ("git://", "https://")
 
-    Two forms:
+
+def skill_from_parts(
+    repo_name: str, repo_url: str, path_parts: list[str]
+) -> tuple[str, str, str]:
+    """(skill_name, repo_url, skill_path) from a parsed URL's trailing path."""
+    skill_path = "/".join(path_parts) if path_parts else f"skills/{repo_name}"
+    skill_name = path_parts[-1] if path_parts else repo_name
+    return skill_name, repo_url, skill_path
+
+
+def strip_web_ref(path_parts: list[str]) -> list[str]:
+    """Drop the tree/<ref> or blob/<ref> of a pasted GitHub web URL."""
+    if len(path_parts) >= 2 and path_parts[0] in ("tree", "blob"):
+        print(f"note: ignoring '{path_parts[0]}/{path_parts[1]}' — a skills "
+              f"entry records no branch, so the checkout's default is used")
+        return path_parts[2:]
+    return path_parts
+
+
+def parse_skill_url(arg: str) -> tuple[str, str, str]:
+    """Parse a skill URL shorthand → (skill_name, repo_url, skill_path).
+
+    Three forms:
       Short:  git://<local-name>[/<path>]
         First segment has no dot → look up ~/src/<name> for the remote URL.
         git://paniolo/skills/paniolo
           → name=paniolo  repo=<origin of ~/src/paniolo>  path=skills/paniolo
 
-      Full:   git://<host>/<owner>/<repo>[/<path>]
-        First segment contains a dot → construct git@host:owner/repo.git.
+      SSH:    git://<host>/<owner>/<repo>[/<path>]
+        First segment contains a dot → construct git@host:owner/repo.git,
+        which git clones over SSH and so needs a key on this machine.
         git://github.com/user/paniolo/skills/hdmicap
           → name=hdmicap  repo=git@github.com:user/paniolo.git  path=skills/hdmicap
+
+      HTTPS:  https://<host>/<owner>/<repo>[.git][/<path>]
+        Kept as typed, so a public repo clones with no account and no key.
+        A GitHub web URL pastes as-is: its /tree/<ref>/ is dropped.
+        https://github.com/user/paniolo/skills/hdmicap
+          → name=hdmicap  path=skills/hdmicap
+            repo=https://github.com/user/paniolo.git
     """
+    if arg.startswith("https://"):
+        parts = [p for p in arg[len("https://"):].split("/") if p]
+        if len(parts) < 3:
+            sys.exit(
+                f"invalid https:// skill URL: {arg!r}\n"
+                f"expected: https://<host>/<owner>/<repo>[/<path/to/skill>]"
+            )
+        host, owner, repo_part = parts[0], parts[1], parts[2]
+        repo_name = repo_part[:-4] if repo_part.endswith(".git") else repo_part
+        repo_url = f"https://{host}/{owner}/{repo_name}.git"
+        return skill_from_parts(repo_name, repo_url, strip_web_ref(parts[3:]))
+
     rest = arg[len("git://"):]
     parts = rest.split("/")
 
@@ -330,10 +384,7 @@ def parse_git_skill_url(arg: str) -> tuple[str, str, str]:
         )
         if result.returncode != 0:
             sys.exit(f"could not get remote URL for ~/src/{repo_name}: {result.stderr.strip()}")
-        repo_url = result.stdout.strip()
-        skill_path = "/".join(path_parts) if path_parts else f"skills/{repo_name}"
-        skill_name = path_parts[-1] if path_parts else repo_name
-        return skill_name, repo_url, skill_path
+        return skill_from_parts(repo_name, result.stdout.strip(), path_parts)
 
     if len(parts) < 3:
         sys.exit(
@@ -341,12 +392,9 @@ def parse_git_skill_url(arg: str) -> tuple[str, str, str]:
             f"expected: git://<host>/<owner>/<repo>[/<path/to/skill>]"
         )
     host, owner, repo_part = parts[0], parts[1], parts[2]
-    path_parts = parts[3:]
     repo_name = repo_part[:-4] if repo_part.endswith(".git") else repo_part
     repo_url = f"git@{host}:{owner}/{repo_name}.git"
-    skill_path = "/".join(path_parts) if path_parts else f"skills/{repo_name}"
-    skill_name = path_parts[-1] if path_parts else repo_name
-    return skill_name, repo_url, skill_path
+    return skill_from_parts(repo_name, repo_url, parts[3:])
 
 
 def migrate_manifest(name: str, m: dict) -> tuple[dict, list[str]]:
@@ -1982,13 +2030,21 @@ def main() -> int:
                     help="List available manifests and exit.")
     ap.add_argument("--add-skill", "-a", metavar="SKILL",
                     help="Add SKILL to the target manifest(s) and exit. "
-                         "Path defaults to ${QBRANCH_ROOT}/skills/SKILL.")
+                         "Path defaults to ${QBRANCH_ROOT}/skills/SKILL. "
+                         "SKILL may instead be a URL: "
+                         "https://<host>/<owner>/<repo>[/<path>] for a repo "
+                         "cloned over HTTPS (no account needed for a public "
+                         "one), git://<host>/<owner>/<repo>[/<path>] for the "
+                         "same repo over SSH, or git://<local-name>[/<path>] "
+                         "to take the URL from ~/src/<local-name>.")
     ap.add_argument("--remove-skill", "-r", metavar="SKILL",
                     help="Remove SKILL from the target manifest(s) and exit.")
     ap.add_argument("--repo", metavar="URL",
-                    help="Git repo URL for the skill (used with --add-skill). "
-                         "On sync, ~/src/<repo-name> is checked first; "
-                         "otherwise the repo is cloned to ~/.agents/skill-repos/.")
+                    help="Git repo URL for the skill (used with --add-skill), "
+                         "recorded and cloned as given, so an https:// URL "
+                         "needs no key. On sync, ~/src/<repo-name> is checked "
+                         "first; otherwise the repo is cloned to "
+                         "~/.agents/skill-repos/.")
     ap.add_argument("--skill-path", metavar="PATH",
                     help="Path within the repo (used with --add-skill --repo). "
                          "Defaults to skills/<skill-name>.")
@@ -2146,8 +2202,9 @@ def edit_skill(args: argparse.Namespace, state: dict) -> int:
     repo_url = args.repo
     skill_path_arg = args.skill_path
 
-    if adding and skill_name.startswith("git://"):
-        skill_name, repo_url, skill_path_arg = parse_git_skill_url(skill_name)
+    if adding and skill_name.startswith(SKILL_URL_PREFIXES):
+        skill_name, repo_url, skill_path_arg = parse_skill_url(skill_name)
+        print(f"skill '{skill_name}' from {repo_url}, path {skill_path_arg}")
 
     if adding:
         if repo_url:

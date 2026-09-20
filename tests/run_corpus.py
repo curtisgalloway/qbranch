@@ -32,6 +32,11 @@ Each case under tests/corpus/<name>/ holds:
                    "stderr_contains": "..."  for a refusal, the text to expect
                    "apply_rc": 0             expected exit code under --apply
                                              (a case that fails on purpose)
+                   "apply": false            leave the case out of --apply: an
+                                             editing mode (--add-skill) never
+                                             produces a plan to converge. It is
+                                             still run by run_parity.py, which
+                                             diffs the manifest it rewrote.
   root/          the config root the tool is pointed at: manifests/,
                  skills/, claude-code/ fragments
   home/          the fake $HOME: .claude/, .agents/skills/, src/<repos>/
@@ -241,8 +246,14 @@ class Sandbox:
         return cmd + extra
 
     def run(self, tool: list[str], extra: list[str]) -> subprocess.CompletedProcess:
+        # Decoded as UTF-8 whatever the platform: the port writes UTF-8
+        # everywhere, and on Windows the default would be the locale codepage,
+        # which turns every em dash in a text-mode message into mojibake.
+        # Undecodable bytes are replaced rather than raised, so a tool that
+        # ever emits something else fails as a readable diff.
         return subprocess.run(self.argv(tool, extra), capture_output=True,
-                              text=True, env=self.env, cwd=self.cwd,
+                              text=True, encoding="utf-8", errors="replace",
+                              env=self.env, cwd=self.cwd,
                               stdin=subprocess.DEVNULL)
 
     def plan(self, tool: list[str]) -> tuple[dict | None, int, str]:
@@ -253,7 +264,9 @@ class Sandbox:
             try:
                 plan = self.normalise(json.loads(r.stdout))
             except json.JSONDecodeError:
-                plan = {"stdout": r.stdout}
+                # A mode that prints text rather than a plan (--add-skill):
+                # its stdout is the expectation, normalised the same way.
+                plan = {"stdout": self.norm(r.stdout)}
         return plan, r.returncode, self.norm(r.stderr)
 
     def norm(self, s: str) -> str:
@@ -292,11 +305,12 @@ def run_case(name: str) -> tuple[dict, int, str]:
 def apply_case(name: str) -> list[str] | None:
     """Apply a case for real, then dry-run again; return the problems found.
 
-    None means the case is a refusal and was not applied.
+    None means the case is a refusal, or opts out of --apply, and was not
+    applied.
     """
     sb = Sandbox(name)
     try:
-        if sb.spec.get("rc", 0) != 0:
+        if sb.spec.get("rc", 0) != 0 or not sb.spec.get("apply", True):
             return None
         r = sb.run(tool_cmd(), [])
         want = sb.spec.get("apply_rc", 0)
@@ -350,7 +364,7 @@ def main() -> int:
         for name in names:
             problems = apply_case(name)
             if problems is None:
-                print(f"skip  {name}  (a refusal; nothing to apply)")
+                print(f"skip  {name}  (nothing to apply)")
                 continue
             applied += 1
             if problems:

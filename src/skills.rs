@@ -22,6 +22,19 @@ pub struct Desired {
     pub dst: PathBuf,
 }
 
+/// Why the clone failed, and the way out when it asked for credentials.
+fn clone_failed_message(repo_url: &str) -> String {
+    let mut msg = format!("git clone {repo_url} failed");
+    if repo_url.starts_with("git@") || repo_url.starts_with("ssh://") {
+        msg.push_str(
+            "\nthat URL clones over SSH, so git wants a key for the host; \
+             a public repo can be named as https://<host>/<owner>/<repo> \
+             instead, which needs no account",
+        );
+    }
+    msg
+}
+
 /// Return the local root of repo_url; fetch only during an actual sync.
 ///
 /// Checks ~/src/<name> first (convention); if that's a git checkout it is
@@ -57,7 +70,7 @@ pub fn resolve_repo_local(ctx: &Ctx, repo_url: &str, update: bool) -> PathBuf {
             .collect();
         match proc::run_inherit(&argv) {
             Ok(true) => {}
-            Ok(false) => die(format!("git clone {repo_url} failed")),
+            Ok(false) => die(clone_failed_message(repo_url)),
             Err(e) => die(format!("git clone {repo_url}: {e}")),
         }
     }
