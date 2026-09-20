@@ -111,6 +111,16 @@ Paths accept `${QBRANCH_ROOT}` (the config root), any `${VAR}`, and a leading `~
    each entry, refreshes the copies on every sync, and says so. `--link-mode copy` asks for
    that anywhere; the choice is remembered.
 
+On a machine that used a harness before its first sync, the harness's own skills directory is
+a real directory where the link goes, so the plan shows `migrate ... dir -> symlink` for it.
+The migration only removes a directory it can account for. Claude Code's own cloud-synced
+skills, which it keeps in `<skills-dir>/synced/` and fills itself, are moved into the skills
+target and found again at the same path through the link — the plan says so, in link mode
+only, since a copy has no link to put them back. Anything else in there is someone's own file:
+the sync refuses with `is a directory and still contains: ...` and changes nothing until it is
+moved aside. The move is one way — qbranch never records `synced/`, so retracting the link
+later leaves it in the skills target.
+
 The config root is otherwise found from `$QBRANCH_ROOT`, then the remembered root, then the
 current directory when it holds `manifests/`, so `cd my-agent-config && qbranch` also works.
 

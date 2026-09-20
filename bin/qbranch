@@ -203,6 +203,14 @@ COPY_IGNORE = {STATE_FILE_NAME, LEGACY_STATE_FILE_NAME}
 # so a sync against a scratch config dir exercises the real code paths.
 CLAUDE_DIR = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
 CLAUDE_SKILLS_LINK = CLAUDE_DIR / "skills"
+# Subdirectories of a harness's skills directory that the app creates and
+# fills itself: Claude Code keeps its cloud-synced skills in synced/. A
+# machine that ran the app before its first sync has one sitting where the
+# skills link goes, so the migration moves it into the skills target instead
+# of refusing. The app finds it again at the same path through the link, and
+# qbranch neither owns it nor records it: the move is one way, and a later
+# retraction leaves it in the skills target.
+APP_OWNED_SKILL_DIRS = ("synced",)
 CLAUDE_SETTINGS_FILE = CLAUDE_DIR / "settings.json"
 # User-scope MCP servers live in the app-owned ~/.claude.json, which moves
 # into the config dir when CLAUDE_CONFIG_DIR is set. Read-only here.
@@ -1973,17 +1981,50 @@ def run_plugin_action(argv: list[str]) -> str | None:
     return " ".join(lines[-2:]) or f"exit {result.returncode}"
 
 
+def app_owned_in(dst: Path, copying: bool) -> list[str]:
+    """The APP_OWNED_SKILL_DIRS a real skills directory holds and may move.
+
+    Only in link mode. The move is safe there because the link puts the
+    directory back at the path the app writes to. A copy has no link: the
+    app's directory would become one more thing qbranch copies and refreshes
+    over, so in copy mode it stays where it is and the migration refuses as
+    it always did.
+    """
+    if copying:
+        return []
+    return [name for name in APP_OWNED_SKILL_DIRS
+            if (dst / name).is_dir() and not (dst / name).is_symlink()]
+
+
 def migrate_skills_dir(dst: Path, src: Path, copying: bool) -> str | None:
     """Replace a real per-agent skills directory with a link to (or copy of) src.
 
-    Stale symlinks inside have already been removed by the cleanup pass; the
-    directory must be empty apart from a state file. Returns an error
+    Stale symlinks inside have already been removed by the cleanup pass; what
+    is left must be junk, or a directory the app owns and fills itself, which
+    moves into src so the app still finds it through the link. Anything else
+    is someone's own file and the migration refuses. Returns an error
     message, or None on success.
     """
-    for junk in (dst / STATE_FILE_NAME, dst / LEGACY_STATE_FILE_NAME,
-                 dst / ".DS_Store"):
-        if junk.is_file():
-            junk.unlink()
+    junk = {STATE_FILE_NAME, LEGACY_STATE_FILE_NAME, ".DS_Store"}
+    owned = app_owned_in(dst, copying)
+    # Checked before anything moves, so a refusal leaves the app's directory
+    # where it was rather than relocating it and then giving up.
+    leftover = sorted(p.name for p in dst.iterdir()
+                      if p.name not in junk and p.name not in owned)
+    if leftover:
+        return (f"{dst} is a directory and still contains: {', '.join(leftover)} — "
+                f"move these aside and re-run")
+    for name in junk:
+        if (dst / name).is_file():
+            (dst / name).unlink()
+    for name in owned:
+        moved = src / name
+        if moved.exists() or moved.is_symlink():
+            return (f"{dst / name} and {moved} both exist — the app's own "
+                    f"{name}/ cannot be moved into the skills target; merge "
+                    f"them by hand and re-run")
+        src.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(dst / name), str(moved))
     try:
         dst.rmdir()
     except OSError:
@@ -2418,9 +2459,11 @@ def sync(args: argparse.Namespace, skills_target: Path, state_path: Path) -> int
             else:
                 actions.append(("copy", label, src, dst, "refresh"))
         elif dst.is_dir() and dst in (CLAUDE_SKILLS_LINK, AGY_SKILLS_LINK):
+            owned = "".join(f"; {n}/ moved to the skills target"
+                            for n in app_owned_in(dst, copying))
             actions.append(("migrate", label, src, dst,
                             f"dir -> {'copy' if copying else 'symlink'} "
-                            f"(after stale links removed)"))
+                            f"(after stale links removed{owned})"))
         elif dst.exists():
             actions.append(("WARN", label, src, dst,
                             "non-symlink at destination — leaving alone"))

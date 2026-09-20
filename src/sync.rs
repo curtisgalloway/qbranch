@@ -5,7 +5,9 @@
 //! apply it unless this is a dry run.
 
 use crate::copy::{copy_path, copy_up_to_date, remove_path, symlinks_available};
-use crate::ctx::{Ctx, LEGACY_STATE_FILE_NAME, MANIFEST_SCHEMA, STATE_FILE_NAME, VERSION};
+use crate::ctx::{
+    Ctx, APP_OWNED_SKILL_DIRS, LEGACY_STATE_FILE_NAME, MANIFEST_SCHEMA, STATE_FILE_NAME, VERSION,
+};
 use crate::manifest::{load_manifest, manifest_skill_srcs};
 use crate::paths;
 use crate::plugins::{plan_claude_plugins, run_plugin_action, PluginAction};
@@ -121,16 +123,76 @@ fn decide_link_mode(
     ("symlink".to_string(), remembered)
 }
 
+/// The APP_OWNED_SKILL_DIRS a real skills directory holds and may move.
+///
+/// Only in link mode. The move is safe there because the link puts the
+/// directory back at the path the app writes to. A copy has no link: the
+/// app's directory would become one more thing qbranch copies and refreshes
+/// over, so in copy mode it stays where it is and the migration refuses as it
+/// always did.
+fn app_owned_in(dst: &Path, copying: bool) -> Vec<&'static str> {
+    if copying {
+        return Vec::new();
+    }
+    APP_OWNED_SKILL_DIRS
+        .iter()
+        .copied()
+        .filter(|name| {
+            let p = dst.join(name);
+            p.is_dir() && !paths::is_symlink(&p)
+        })
+        .collect()
+}
+
 /// Replace a real per-agent skills directory with a link to (or copy of) src.
 ///
-/// Stale symlinks inside have already been removed by the cleanup pass; the
-/// directory must be empty apart from a state file. Returns an error
-/// message, or None on success.
+/// Stale symlinks inside have already been removed by the cleanup pass; what
+/// is left must be junk, or a directory the app owns and fills itself, which
+/// moves into src so the app still finds it through the link. Anything else
+/// is someone's own file and the migration refuses. Returns an error message,
+/// or None on success.
 fn migrate_skills_dir(dst: &Path, src: &Path, copying: bool) -> Option<String> {
-    for junk in [STATE_FILE_NAME, LEGACY_STATE_FILE_NAME, ".DS_Store"] {
-        let p = dst.join(junk);
+    let junk = [STATE_FILE_NAME, LEGACY_STATE_FILE_NAME, ".DS_Store"];
+    let owned = app_owned_in(dst, copying);
+    // Checked before anything moves, so a refusal leaves the app's directory
+    // where it was rather than relocating it and then giving up.
+    let mut leftover: Vec<String> = fs::read_dir(dst)
+        .map(|rd| {
+            rd.flatten()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .filter(|n| !junk.contains(&n.as_str()) && !owned.contains(&n.as_str()))
+                .collect()
+        })
+        .unwrap_or_default();
+    leftover.sort();
+    if !leftover.is_empty() {
+        return Some(format!(
+            "{} is a directory and still contains: {} — move these aside and re-run",
+            display(dst),
+            leftover.join(", ")
+        ));
+    }
+    for name in junk {
+        let p = dst.join(name);
         if p.is_file() {
             let _ = fs::remove_file(&p);
+        }
+    }
+    for name in &owned {
+        let from = dst.join(name);
+        let moved = src.join(name);
+        if moved.exists() || paths::is_symlink(&moved) {
+            return Some(format!(
+                "{} and {} both exist — the app's own {name}/ cannot be moved into the skills target; merge them by hand and re-run",
+                display(&from),
+                display(&moved)
+            ));
+        }
+        if let Err(e) = fs::create_dir_all(src) {
+            return Some(format!("{}: {e}", display(src)));
+        }
+        if let Err(e) = fs::rename(&from, &moved) {
+            return Some(format!("{} -> {}: {e}", display(&from), display(&moved)));
         }
     }
     if fs::remove_dir(dst).is_err() {
@@ -480,10 +542,14 @@ pub fn run(ctx: &mut Ctx, args: &SyncArgs) -> i32 {
         } else if d.dst.is_dir()
             && (d.dst == ctx.claude_skills_link || d.dst == ctx.agy_skills_link)
         {
+            let owned: String = app_owned_in(&d.dst, copying)
+                .iter()
+                .map(|n| format!("; {n}/ moved to the skills target"))
+                .collect();
             actions.push(action(
                 "migrate",
                 format!(
-                    "dir -> {} (after stale links removed)",
+                    "dir -> {} (after stale links removed{owned})",
                     if copying { "copy" } else { "symlink" }
                 ),
             ));
