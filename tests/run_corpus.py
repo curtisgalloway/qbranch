@@ -246,8 +246,14 @@ class Sandbox:
         return cmd + extra
 
     def run(self, tool: list[str], extra: list[str]) -> subprocess.CompletedProcess:
+        # Decoded as UTF-8 whatever the platform: the port writes UTF-8
+        # everywhere, and on Windows the default would be the locale codepage,
+        # which turns every em dash in a text-mode message into mojibake.
+        # Undecodable bytes are replaced rather than raised, so a tool that
+        # ever emits something else fails as a readable diff.
         return subprocess.run(self.argv(tool, extra), capture_output=True,
-                              text=True, env=self.env, cwd=self.cwd,
+                              text=True, encoding="utf-8", errors="replace",
+                              env=self.env, cwd=self.cwd,
                               stdin=subprocess.DEVNULL)
 
     def plan(self, tool: list[str]) -> tuple[dict | None, int, str]:
