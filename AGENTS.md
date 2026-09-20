@@ -33,6 +33,10 @@ packaging/windows/     the per-user MSI: Package.wxs (WiX v7) and build.ps1, whi
                        payload and refuses to build when skills/ holds one the wxs lacks
 .github/workflows/     ci.yml on every push; release.yml on a version tag (see Releasing)
 GLOSSARY.md            the vocabulary; add a term before using it in a document
+RELEASE-TRAIN.md       the release-train profile: one arm per channel, the smoke contract
+                       every installed copy must pass, and where the regression tests live.
+                       `profile_check.py --update` re-pins its Sources table after a change
+                       to the release workflow or a packaging manifest
 HANDOFF.md             session handoff, untracked; read it first when it exists
 ```
 
@@ -118,8 +122,8 @@ HANDOFF.md             session handoff, untracked; read it first when it exists
    `src/ctx.rs` (what the built binary prints; `Cargo.toml` never reaches `--version`) and
    `version` in `Cargo.toml` — run `cargo build` so `Cargo.lock` follows (the release builds
    with `--locked`), and commit.
-2. Tag `vX.Y.Z` and push the tag. The `version` job refuses a tag that disagrees with either
-   version string.
+2. Tag `vX.Y.Z` and push the tag. The `version` job refuses a tag that disagrees with any of
+   the three, and names whichever one does.
 3. `release.yml` builds macOS on both architectures, Linux for musl on both architectures
    (fully static) and Windows; runs the corpus against the native builds (Intel macOS is
    cross-built without a corpus run); packages a tarball per target, the `.deb` and the MSI;
@@ -129,6 +133,12 @@ HANDOFF.md             session handoff, untracked; read it first when it exists
    as artifacts only, with no release and no fan-out, for testing it.
 4. The Windows job waits for the `release` environment's reviewer approval, so a release is
    one click rather than fully unattended.
+
+`RELEASE-TRAIN.md` describes the same pipeline for the `release-train` skill, which builds
+every channel and installs each one the way a user would *before* a tag exists — the check
+the corpus cannot make, since a green corpus says nothing about whether the `.deb` installs.
+A change to `release.yml` or to anything under `packaging/` means re-reading the arms it feeds
+and re-pinning the profile's Sources table; `profile_check.py` is what notices.
 
 Channels, and what arms each:
 

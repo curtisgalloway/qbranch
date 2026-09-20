@@ -13,9 +13,18 @@ Each harness's own skills directory is pointed at it, so every harness sees the 
 **Antigravity.** Google's coding agent (the `agy` CLI and IDE). It keeps its state under
 `~/.gemini/`.
 
+**Arm.** One channel's lane in a release train run: build the artifact, install it the way a
+user would into a throwaway prefix, run the smoke contract against what was installed. An arm
+reports PASS, PARTIAL (built but not installed, usually for want of a host), SKIP (could not
+build) or FAIL.
+
 **Capability fragment.** A settings fragment tied to an optional feature rather than to one
 machine, listed only by the manifests of machines that have the feature. Example: the fragment
 that declares the CAD plugins, listed by the two Macs.
+
+**Channel.** One way a release reaches a user: the Homebrew tap, the `.deb`, the Windows MSI,
+a release archive, a source build. Each is an arm of the release train, because a green test
+suite says nothing about whether a package installs.
 
 **Claude Code.** Anthropic's coding agent. It keeps its state under `~/.claude/` (or the
 directory named by `CLAUDE_CONFIG_DIR`).
@@ -69,6 +78,14 @@ and agents packaged together, installed from a marketplace. Identified as
 **Policy.** The merged result of a manifest's settings fragments: the keys qbranch asserts into
 the app-owned settings file. Everything else in that file is app state and left alone.
 
+**Regression archaeology.** Walking a project's fixed bugs and asking, of each, whether a test
+would fail if the fix were reverted. A fix with no such test gets one, proved by reverting the
+fixed source and watching the new test fail.
+
+**Release train.** The pre-tag pipeline that builds every channel, installs each the way a user
+would, runs the smoke contract against it, and refuses to tag unless every arm is green. Its
+per-repo description is the profile, `RELEASE-TRAIN.md`.
+
 **Retraction.** Removing from the live settings file what an earlier policy asserted and the
 current one no longer does, unless the app changed that value in the meantime. The state file
 records the last applied policy to make this possible.
@@ -89,6 +106,11 @@ pick themes; a plain repo contributes `skills/*/SKILL.md`.
 
 **Skills target.** The directory `skills` entries are linked into: the agent-neutral skills
 directory by default. The state file lives there.
+
+**Smoke contract.** The short list of checks every channel's installed copy must pass: the CLI
+runs, it finds its packaged data files, a sync works end to end, the state round trips, and the
+report modes degrade rather than crash. Numbered S1 upward so an arm can add steps but never
+drop one.
 
 **State file.** `.qbranch-state.json` in the skills target: the manifest name, the config root,
 the chosen link mode, every link and copy the last sync created, and the settings policy it
