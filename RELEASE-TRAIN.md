@@ -1,6 +1,6 @@
 # Release train profile: qbranch
 
-Derived from commit 2f7054c on 2026-09-19. Executed by the `release-train`
+Derived from commit dc82497 on 2026-09-19. Executed by the `release-train`
 skill; kept honest by `profile_check.py` (see `## Sources`). Lines marked
 `UNVERIFIED` were inferred by the agent that wrote this file and have not been
 confirmed by a maintainer or by a passing arm.
@@ -105,17 +105,19 @@ against the release workflow when present.
 - workflow job: none — this path is documented in `README.md`, not built by the workflow
 - host: local
 - build: `cargo build --release --locked`
-- install like a user: `CARGO_INSTALL_ROOT=$(mktemp -d) cargo install --locked --path .`, which
-  is what `cargo install qbranch` does once the crate is published. `CARGO_INSTALL_ROOT` is
-  required: without it cargo writes to `~/.cargo/bin` and replaces the developer's own copy.
+- install like a user: `CARGO_INSTALL_ROOT=$(mktemp -d) cargo install --locked qbranch` from the
+  registry; `--path .` instead to test an unpublished candidate. `CARGO_INSTALL_ROOT` is
+  required either way: without it cargo writes to `~/.cargo/bin` and replaces the developer's
+  own copy.
 - smoke: S1..S5. A cargo install ships no skill files, so S2 checks only that `--skill` prints
   the three embedded ones.
 - cleanup: remove the install root.
-- caveats: `README.md` says `cargo install qbranch`, but the crate is not published — the
-  `crates` job is gated behind the `CRATES_PUBLISH` repository variable and the first publish
-  must be manual. UNVERIFIED: an unauthenticated crates.io lookup answered 403 rather than a
-  clear yes or no. Until it is published, this arm proves the from-source path, not the
-  registry one, and the README line is wrong.
+- caveats: none outstanding. The crate was first published by hand at 0.4.0 on 2026-09-20 —
+  only an existing crate can declare a trusted publisher — and `CRATES_PUBLISH` is now `true`,
+  so the `crates` job publishes each non-prerelease tag over OIDC with no stored token.
+  Verified: `cargo install --locked qbranch` into a throwaway root yields 0.4.0 with all three
+  skills. A release that bumps the version without the crate job running would leave the
+  registry behind the other channels; the re-verify below is what notices.
 
 ### archive
 
@@ -264,15 +266,15 @@ against the release workflow when present.
      nothing else
   5. tag the merged head, annotated, `v<X.Y.Z>` with subject `qbranch <X.Y.Z>`, and push the tag
   6. watch `release.yml`: `resolve version`, five `build` jobs, `publish the GitHub release`,
-     `bump the Homebrew tap`, `publish to crates.io` (skipped unless `CRATES_PUBLISH` is `true`).
-     The Windows job runs in the `release` environment, which carries a reviewer rule.
+     `bump the Homebrew tap`, `publish to crates.io` (live since 0.4.0; it skips a prerelease
+     tag). The Windows job runs in the `release` environment, which carries a reviewer rule.
 - re-verify, each from the public URL a user would use:
   - deb: download `qbranch_<X.Y.Z>_amd64.deb` from the release, check it against `SHA256SUMS`,
     `apt install` it in a container, S1..S3
   - archive: download the musl tarball, check it against `SHA256SUMS`, extract, S1..S3
   - homebrew: `brew install curtisgalloway/tap/qbranch` on macos-bench, S1..S3
   - msi: download and `msiexec /i` on windows-bench, S1..S3
-  - source: `cargo install --locked qbranch` into a throwaway root once the crate is published
+  - source: `cargo install --locked qbranch` into a throwaway root, S1..S3
 - a re-verify failure does not roll back a public tag: open an issue and report
   `PUBLISHED, unverified on <channel>`.
 
@@ -293,4 +295,4 @@ rewrites the ids once that is done.
 | `src/ctx.rs` | ae1ee0e116b0 | Project: version source |
 | `bin/qbranch` | a598c1144672 | Project: version source, Smoke contract |
 | `README.md` | d2eb47a41d23 | Channels: install like a user |
-| `AGENTS.md` | cb4acb03c626 | Project: bump rules, Publish |
+| `AGENTS.md` | e4d3695608f4 | Project: bump rules, Publish |

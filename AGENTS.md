@@ -166,10 +166,12 @@ Channels, and what arms each:
   can update it on each release.
 - **crates.io**: the crate holds `src/`, the manifests, `LICENSE`, `README.md` and
   `GLOSSARY.md` (`include` in `Cargo.toml`); the reference script and the corpus, whose
-  fixtures hold deliberately dangling symlinks, stay out. The first publish is by hand
-  (`cargo publish` with a token), because only an existing crate can declare a trusted
-  publisher; then declare this repo's `release.yml` as the trusted publisher on crates.io and
-  set the repository variable `CRATES_PUBLISH=true`. `[package.metadata.binstall]` tells
+  fixtures hold deliberately dangling symlinks, stay out. Published since 0.4.0: the first
+  publish was by hand with a token, because only an existing crate can declare a trusted
+  publisher, and `release.yml` is now that publisher with `CRATES_PUBLISH=true` set, so the
+  `crates` job releases each non-prerelease tag over OIDC. Publish by hand from the tag rather
+  than from `main`: `GLOSSARY.md` is inside `include`, so a doc commit landing after the tag
+  would otherwise ship in a crate that no tag reproduces. `[package.metadata.binstall]` tells
   `cargo binstall` where the archives are and must agree with the names `release.yml` makes.
 - **Tarballs and the zip**: one top-level directory holding `qbranch`, `LICENSE`, `README.md`
   and `skills/`.
