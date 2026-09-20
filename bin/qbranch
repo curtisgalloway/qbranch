@@ -182,7 +182,7 @@ REPO = Path(".")
 DEFAULT_SKILLS_TARGET = Path.home() / ".agents" / "skills"
 STATE_FILE_NAME = ".qbranch-state.json"
 LEGACY_STATE_FILE_NAME = ".agent-skills-state.json"
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 # Manifests carry a `schema` (1 when absent). Older schemas are upgraded in
 # memory on every load and rewritten by --upgrade-manifests; a manifest newer
 # than MANIFEST_SCHEMA is refused, so the upgrade path is forward-only.

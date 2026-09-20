@@ -59,18 +59,21 @@ jobs:
             echo "version=0.0.0~dev.$(printf '%.7s' "$GITHUB_SHA")" >> "$GITHUB_OUTPUT"
           fi
 
-      # A tag that disagrees with the crate or the reference script would ship
-      # a package whose --version lies about what it is. Refuse before
-      # building anything.
-      - name: Check the tag matches Cargo.toml and the reference script
+      # A tag that disagrees with the crate, the reference script or the
+      # port's own constant would ship a package whose --version lies about
+      # what it is. src/ctx.rs is the one the built binary prints, so it is
+      # the one that would lie: Cargo.toml never reaches --version. Refuse
+      # before building anything.
+      - name: Check the tag matches every version string
         if: github.ref_type == 'tag'
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           crate=$(sed -n -E 's/^version = "([^"]+)"/\1/p' Cargo.toml | head -1)
           script=$(python3 bin/qbranch --version | cut -d' ' -f2)
-          if [ "$crate" != "$VERSION" ] || [ "$script" != "$VERSION" ]; then
-            echo "::error::tag says ${VERSION}, Cargo.toml says ${crate}, bin/qbranch says ${script}"
+          port=$(sed -n -E 's/^pub const VERSION: &str = "([^"]+)";/\1/p' src/ctx.rs)
+          if [ "$crate" != "$VERSION" ] || [ "$script" != "$VERSION" ] || [ "$port" != "$VERSION" ]; then
+            echo "::error::tag says ${VERSION}, Cargo.toml says ${crate}, bin/qbranch says ${script}, src/ctx.rs says ${port}"
             exit 1
           fi
 
