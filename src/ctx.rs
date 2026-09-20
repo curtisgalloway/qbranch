@@ -20,6 +20,14 @@ pub const LEGACY_STATE_FILE_NAME: &str = ".agent-skills-state.json";
 /// Never copied into a copy of a skills directory, and ignored when checking
 /// whether a copy is up to date.
 pub const COPY_IGNORE: [&str; 2] = [STATE_FILE_NAME, LEGACY_STATE_FILE_NAME];
+/// Subdirectories of a harness's skills directory that the app creates and
+/// fills itself: Claude Code keeps its cloud-synced skills in synced/. A
+/// machine that ran the app before its first sync has one sitting where the
+/// skills link goes, so the migration moves it into the skills target instead
+/// of refusing. The app finds it again at the same path through the link, and
+/// qbranch neither owns it nor records it: the move is one way, and a later
+/// retraction leaves it in the skills target.
+pub const APP_OWNED_SKILL_DIRS: [&str; 1] = ["synced"];
 /// Claude Code registers its own marketplace on first interactive run, but the
 /// `claude plugin` CLI does not: on a fresh config dir it must be added like
 /// any other before an official plugin can be installed.

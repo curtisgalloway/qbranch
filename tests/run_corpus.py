@@ -32,6 +32,10 @@ Each case under tests/corpus/<name>/ holds:
                    "stderr_contains": "..."  for a refusal, the text to expect
                    "apply_rc": 0             expected exit code under --apply
                                              (a case that fails on purpose)
+                   "apply_rc_copy": 1        the same for a copy-mode --apply,
+                                             for the few behaviours that differ
+                                             by link mode (migrating a skills
+                                             directory the app owns)
                    "apply": false            leave the case out of --apply: an
                                              editing mode (--add-skill) never
                                              produces a plan to converge. It is
@@ -314,6 +318,8 @@ def apply_case(name: str) -> list[str] | None:
             return None
         r = sb.run(tool_cmd(), [])
         want = sb.spec.get("apply_rc", 0)
+        if os.environ.get("QBRANCH_LINK_MODE") == "copy":
+            want = sb.spec.get("apply_rc_copy", want)
         problems = []
         if r.returncode != want:
             problems.append(f"apply rc={r.returncode} (want {want})\n"
