@@ -1,5 +1,5 @@
 {
-  "tool": "0.3.0",
+  "tool": "0.4.0",
   "schema": 2,
   "manifest": "agy",
   "dry_run": true,

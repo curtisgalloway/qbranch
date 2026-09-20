@@ -114,8 +114,10 @@ HANDOFF.md             session handoff, untracked; read it first when it exists
 
 ## Releasing
 
-1. Bump `VERSION` in `bin/qbranch` and `version` in `Cargo.toml`, run `cargo build` so
-   `Cargo.lock` follows (the release builds with `--locked`), and commit.
+1. Bump the version in all three places — `VERSION` in `bin/qbranch`, `VERSION` in
+   `src/ctx.rs` (what the built binary prints; `Cargo.toml` never reaches `--version`) and
+   `version` in `Cargo.toml` — run `cargo build` so `Cargo.lock` follows (the release builds
+   with `--locked`), and commit.
 2. Tag `vX.Y.Z` and push the tag. The `version` job refuses a tag that disagrees with either
    version string.
 3. `release.yml` builds macOS on both architectures, Linux for musl on both architectures
