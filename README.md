@@ -169,7 +169,8 @@ document every key.
 every manifest key, the first sync and the everyday commands. `skills/review-plugins` walks the
 plugins a machine has installed but no fragment manages, deciding each one's fate with
 structured questions. `skills/agent-audit` runs the overall audit and walks its findings the
-same way. List this checkout as a skill repo in a manifest to link them. `qbranch --skill`
+same way. `skills/claude-apps-sync` uploads a manifest's skills to the Claude apps through
+their Settings page in Chrome, driven by `--export-zips`. List this checkout as a skill repo in a manifest to link them. `qbranch --skill`
 lists them and `qbranch --skill qbranch` prints the guide verbatim, so an agent that finds
 qbranch on its PATH can read how to drive it before any manifest exists.
 

@@ -78,7 +78,7 @@ $ROOT/skills/demo/SKILL.md
 | id | check | pass condition |
 |---|---|---|
 | S1 | `qbranch --help` and `qbranch --version` | exit 0; `--version` prints exactly the version being released; help lists `--dry-run`, `--list`, `--add-skill`, `--audit`, `--skill` |
-| S2 | `qbranch --skill` then `qbranch --skill qbranch` | lists exactly `agent-audit`, `qbranch`, `review-plugins`; printing one emits its `SKILL.md` verbatim. Where the channel also installs the skills as files, `qbranch --skill review-plugins` must `diff` clean against the installed copy — this is what catches a package that forgot a skill |
+| S2 | `qbranch --skill` then `qbranch --skill qbranch` | lists exactly `agent-audit`, `claude-apps-sync`, `qbranch`, `review-plugins`; printing one emits its `SKILL.md` verbatim. Where the channel also installs the skills as files, `qbranch --skill review-plugins` must `diff` clean against the installed copy — this is what catches a package that forgot a skill |
 | S3 | `qbranch --root $ROOT --manifest $MANIFEST --skills-target $HOME/.agents/skills` | exit 0; `$HOME/.agents/skills/demo` resolves to `$ROOT/skills/demo` (a symlink, or a copy under `--link-mode copy`) |
 | S4 | the same command again with `--dry-run` | exit 0; every action is `ok` — nothing left to do. Then `$HOME/.agents/skills/.qbranch-state.json` parses and records `manifest: smoke` (the value of `$MANIFEST`) and the root, which is the config/state round trip |
 | S5 | `qbranch --audit --json` and `qbranch --plugin-status --json` in that same `HOME` | exit 0 on the audit; both emit parseable JSON on stdout with no harness installed; neither panics nor prints a Rust backtrace. Both exit 0 with no harness installed (checked on `local`, 0.4.0); a panic is a FAIL whatever the exit code |

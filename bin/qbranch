@@ -2382,7 +2382,8 @@ def main() -> int:
                     help="Print bundled skill NAME (its SKILL.md, verbatim) and "
                          "exit; without NAME, list the bundled skills. Start "
                          "with 'qbranch', the guide to operating the tool; "
-                         "review-plugins and agent-audit are the others.")
+                         "review-plugins, agent-audit and claude-apps-sync "
+                         "are the others.")
     ap.add_argument("--upgrade-manifests", action="store_true",
                     help="Rewrite every manifest under manifests/ at the "
                          "current schema and exit. Older manifests work "

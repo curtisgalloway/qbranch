@@ -149,6 +149,7 @@ jobs:
           test -x /usr/bin/qbranch
           test -f /usr/share/qbranch/skills/review-plugins/SKILL.md
           test -f /usr/share/qbranch/skills/agent-audit/SKILL.md
+          test -f /usr/share/qbranch/skills/claude-apps-sync/SKILL.md
           test -f /usr/share/doc/qbranch/LICENSE
           crate=$(sed -n -E 's/^version = "([^"]+)"/\1/p' Cargo.toml | head -1)
           reported=$(/usr/bin/qbranch --version)
@@ -315,7 +316,8 @@ jobs:
           }
           $prefix = Join-Path $env:LOCALAPPDATA "Programs\qbranch"
           foreach ($file in 'bin\qbranch.exe', 'share\qbranch\skills\review-plugins\SKILL.md',
-                            'share\qbranch\skills\agent-audit\SKILL.md', 'doc\LICENSE', 'doc\README.md') {
+                            'share\qbranch\skills\agent-audit\SKILL.md',
+                            'share\qbranch\skills\claude-apps-sync\SKILL.md', 'doc\LICENSE', 'doc\README.md') {
             if (-not (Test-Path "$prefix\$file")) { throw "the package shipped no $file" }
           }
 

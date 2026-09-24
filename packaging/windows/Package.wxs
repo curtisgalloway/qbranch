@@ -57,6 +57,7 @@ Design notes, the same ones as oxbox's Package.wxs, which this follows:
                 <Directory Id="SkillQbranchDir" Name="qbranch" />
                 <Directory Id="SkillReviewPluginsDir" Name="review-plugins" />
                 <Directory Id="SkillAgentAuditDir" Name="agent-audit" />
+                <Directory Id="SkillClaudeAppsSyncDir" Name="claude-apps-sync" />
               </Directory>
             </Directory>
           </Directory>
@@ -104,6 +105,13 @@ Design notes, the same ones as oxbox's Package.wxs, which this follows:
         <RegistryValue Root="HKCU" Key="Software\qbranch\msi" Name="skill-agent-audit"
                        Value="1" Type="integer" KeyPath="yes" />
         <RemoveFolder Id="rmSkillAgentAuditDir" Directory="SkillAgentAuditDir" On="uninstall" />
+      </Component>
+
+      <Component Id="cmpSkillClaudeAppsSync" Directory="SkillClaudeAppsSyncDir" Guid="E63EE66D-2AEF-4DE0-85EA-A579AD5BDACD">
+        <File Id="filSkillClaudeAppsSync" Name="SKILL.md" Source="$(var.StageDir)\share\qbranch\skills\claude-apps-sync\SKILL.md" />
+        <RegistryValue Root="HKCU" Key="Software\qbranch\msi" Name="skill-claude-apps-sync"
+                       Value="1" Type="integer" KeyPath="yes" />
+        <RemoveFolder Id="rmSkillClaudeAppsSyncDir" Directory="SkillClaudeAppsSyncDir" On="uninstall" />
       </Component>
 
       <Component Id="cmpDoc" Directory="DocDir" Guid="16103231-DB2D-44AB-B77E-45F93A107A8D">
