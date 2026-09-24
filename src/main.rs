@@ -63,6 +63,13 @@ struct Cli {
     #[arg(long, value_name = "MODE", value_parser = sync::LINK_MODES)]
     link_mode: Option<String>,
 
+    /// Before syncing, fetch and fast-forward the git checkouts skills come
+    /// from (skill_repos, and the ~/src checkout of a repo-based skill). A
+    /// checkout with uncommitted changes, no upstream or local commits is
+    /// reported and left alone.
+    #[arg(short = 'u', long)]
+    update: bool,
+
     /// List available manifests and exit.
     #[arg(long)]
     list: bool,
@@ -285,6 +292,9 @@ fn run() -> i32 {
         return fix_renames(&ctx, &args, &state);
     }
 
+    if args.update && args.dry_run {
+        die("--update moves checkouts, so it cannot be combined with --dry-run; run qbranch --update to update and sync");
+    }
     if args.json && !args.dry_run {
         die("--json on a sync needs --dry-run (it prints the plan); --plugin-status and --audit have their own JSON reports");
     }
@@ -294,6 +304,7 @@ fn run() -> i32 {
             manifest: args.manifest.clone(),
             skills_target,
             dry_run: args.dry_run,
+            update: args.update,
             json: args.json,
             root: args.root.clone(),
             link_mode: args.link_mode.clone(),

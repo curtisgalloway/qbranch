@@ -104,6 +104,7 @@ Everyday commands:
 qbranch                       # sync with the remembered root and manifest
 qbranch --dry-run             # show the plan, change nothing
 qbranch --dry-run --json      # the same plan as JSON
+qbranch --update              # fast-forward clean skill checkouts, then sync
 qbranch --link-mode copy      # copies instead of links, from now on; --link-mode auto forgets
 qbranch --list                # manifests in the config root
 qbranch --plugin-status       # managed / unmanaged plugins on this machine

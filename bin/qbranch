@@ -126,6 +126,12 @@ Otherwise the repo is cloned (and kept updated) under
 manifest records it, so an https:// URL reaches a public repo without an
 account or a key, and an SSH URL needs one.
 
+`--update` also brings the local checkouts up to date before the sync:
+every `skill_repos` checkout and the ~/src/<repo-name> checkout of a
+repo-based entry is fetched and fast-forwarded to its upstream. Only a
+clean checkout that is strictly behind moves; one with uncommitted
+changes, local commits or no upstream branch is reported and left alone.
+
 Both local path and dst fields support:
   - ${QBRANCH_ROOT}       (the config root)
   - any environment variable via ${VAR}
@@ -310,6 +316,82 @@ def prepare_skill_repos(manifest: dict) -> None:
         if repo is not None and repo not in seen:
             resolve_repo_local(repo, update=True)
             seen.add(repo)
+
+
+UPDATE_FETCH_TIMEOUT = 120
+
+
+def update_checkouts(manifest: dict) -> list[tuple[str, str]]:
+    """--update: fast-forward the checkouts the manifest's skills come from.
+
+    Covers the ~/src/<name> checkout a repo-based `skills` entry resolves to
+    and every `skill_repos` checkout; the ~/.agents/skill-repos clones are
+    pulled by every sync already. A checkout moves only when its tree is
+    clean and its branch is strictly behind its upstream; anything else is
+    reported and left alone, since these are often checkouts someone works
+    in. Returns (level, text) messages for the plan.
+    """
+    out: list[tuple[str, str]] = []
+    seen: set[Path] = set()
+
+    def visit(root: Path) -> None:
+        if root not in seen:
+            seen.add(root)
+            out.append(update_checkout(root))
+
+    for entry in manifest.get("skills", []):
+        repo = entry.get("repo")
+        if repo is None:
+            continue
+        local = Path.home() / "src" / repo_name_from_url(repo)
+        if local.is_dir() and (local / ".git").exists():
+            visit(local)
+    for spec in manifest.get("skill_repos", []):
+        if isinstance(spec, str):
+            spec = {"path": spec}
+        path = expand_path(spec["path"])
+        if not path.is_dir():
+            continue  # reported as a missing skill repo by the plan
+        root = git_root(path)
+        if root is None:
+            out.append(("skipped", f"{path}: not a git checkout, not updated"))
+        else:
+            visit(root)
+    return out
+
+
+def update_checkout(root: Path) -> tuple[str, str]:
+    """Fast-forward one checkout to its upstream if that is safe."""
+    name = root.name
+    upstream = git_out(root, "rev-parse", "--abbrev-ref",
+                       "--symbolic-full-name", "@{u}")
+    if upstream is None:
+        return ("skipped", f"{name}: no upstream branch, not updated")
+    try:
+        fetch = subprocess.run(
+            ["git", "-C", str(root), "fetch", "--quiet"],
+            capture_output=True, text=True, stdin=subprocess.DEVNULL,
+            timeout=UPDATE_FETCH_TIMEOUT)
+        fetched = fetch.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        fetched = False
+    if not fetched:
+        return ("warning", f"{name}: git fetch failed, not updated")
+    behind = int((git_out(root, "rev-list", "--count", "HEAD..@{u}") or "0").strip())
+    ahead = int((git_out(root, "rev-list", "--count", "@{u}..HEAD") or "0").strip())
+    if behind == 0:
+        return ("update", f"{name}: up to date")
+    if ahead:
+        return ("skipped", f"{name}: diverged from {upstream.strip()} "
+                           f"({ahead} local, {behind} upstream), not updated")
+    if git_out(root, "status", "--porcelain", "--untracked-files=no"):
+        return ("skipped", f"{name}: uncommitted changes, not updated")
+    old = (git_out(root, "rev-parse", "--short", "HEAD") or "").strip()
+    if git_out(root, "merge", "--ff-only", "--quiet", "@{u}") is None:
+        return ("warning", f"{name}: fast-forward failed, not updated")
+    new = (git_out(root, "rev-parse", "--short", "HEAD") or "").strip()
+    commits = "commit" if behind == 1 else "commits"
+    return ("update", f"{name}: {old}..{new} ({behind} {commits})")
 
 
 def resolve_skill_src(entry: dict) -> Path:
@@ -2067,6 +2149,12 @@ def main() -> int:
                          "symlinks), auto (symlink, falling back to copy on "
                          "Windows without Developer Mode). Remembered like "
                          "--root; auto forgets.")
+    ap.add_argument("--update", "-u", action="store_true",
+                    help="Before syncing, fetch and fast-forward the git "
+                         "checkouts skills come from (skill_repos, and the "
+                         "~/src checkout of a repo-based skill). A checkout "
+                         "with uncommitted changes, no upstream or local "
+                         "commits is reported and left alone.")
     ap.add_argument("--list", action="store_true",
                     help="List available manifests and exit.")
     ap.add_argument("--add-skill", "-a", metavar="SKILL",
@@ -2202,6 +2290,9 @@ def main() -> int:
         resolve_root(args.root, state)
         return fix_renames(args, state)
 
+    if args.update and args.dry_run:
+        sys.exit("--update moves checkouts, so it cannot be combined with "
+                 "--dry-run; run qbranch --update to update and sync")
     if args.json and not args.dry_run:
         sys.exit("--json on a sync needs --dry-run (it prints the plan); "
                  "--plugin-status and --audit have their own JSON reports")
@@ -2354,6 +2445,9 @@ def sync(args: argparse.Namespace, skills_target: Path, state_path: Path) -> int
         elif manifest.get(mkey):
             settings_notes.append(f"{agent} settings: skipped (not installed)")
 
+    if args.update:
+        for level, text in update_checkouts(manifest):
+            say(level, text)
     if not args.dry_run:
         prepare_skill_repos(manifest)
     desired, skipped = collect_desired(manifest, skills_target, claude_ok, agy_ok)

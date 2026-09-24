@@ -8,11 +8,13 @@ use crate::ctx::Ctx;
 use crate::manifest::{local_checkout, repo_name_from_url};
 use crate::paths;
 use crate::proc;
+use crate::rename;
 use crate::util::{self, die, display, JMap};
 use serde_json::Value as Json;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 /// One thing the manifest wants linked: `dst -> src`.
 #[derive(Clone, Debug)]
@@ -88,6 +90,124 @@ pub fn prepare_skill_repos(ctx: &Ctx, manifest: &JMap) {
             }
         }
     }
+}
+
+const UPDATE_FETCH_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// --update: fast-forward the checkouts the manifest's skills come from.
+///
+/// Covers the ~/src/<name> checkout a repo-based `skills` entry resolves to
+/// and every `skill_repos` checkout; the ~/.agents/skill-repos clones are
+/// pulled by every sync already. A checkout moves only when its tree is
+/// clean and its branch is strictly behind its upstream; anything else is
+/// reported and left alone, since these are often checkouts someone works
+/// in. Returns (level, text) messages for the plan.
+pub fn update_checkouts(ctx: &Ctx, manifest: &JMap) -> Vec<(&'static str, String)> {
+    let mut out = Vec::new();
+    let mut seen: HashSet<PathBuf> = HashSet::new();
+    let mut visit = |root: PathBuf, out: &mut Vec<(&'static str, String)>| {
+        if seen.insert(root.clone()) {
+            out.push(update_checkout(&root));
+        }
+    };
+    for entry in util::arr_or_empty(manifest, "skills") {
+        if let Some(repo) = util::obj(Some(&entry)).and_then(|e| e.get("repo")) {
+            let local = local_checkout(ctx, &util::py_str(repo));
+            if local.is_dir() && local.join(".git").exists() {
+                visit(local, &mut out);
+            }
+        }
+    }
+    for spec in util::arr_or_empty(manifest, "skill_repos") {
+        let raw = match &spec {
+            Json::String(s) => s.clone(),
+            Json::Object(m) => util::py_get_str(m, "path"),
+            _ => die("manifest 'skill_repos' entries must be objects or strings"),
+        };
+        let path = ctx.expand(&raw);
+        if !path.is_dir() {
+            continue; // reported as a missing skill repo by the plan
+        }
+        match rename::git_root(&path) {
+            None => out.push((
+                "skipped",
+                format!("{}: not a git checkout, not updated", display(&path)),
+            )),
+            Some(root) => visit(root, &mut out),
+        }
+    }
+    out
+}
+
+/// Fast-forward one checkout to its upstream if that is safe.
+fn update_checkout(root: &Path) -> (&'static str, String) {
+    let name = root
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let Some(upstream) = rename::git(
+        root,
+        &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+    ) else {
+        return (
+            "skipped",
+            format!("{name}: no upstream branch, not updated"),
+        );
+    };
+    let argv: Vec<String> = ["git", "-C", &display(root), "fetch", "--quiet"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    let fetched = matches!(proc::run_capture(&argv, Some(UPDATE_FETCH_TIMEOUT)), Ok(o) if o.ok());
+    if !fetched {
+        return ("warning", format!("{name}: git fetch failed, not updated"));
+    }
+    let count = |range: &str| -> u64 {
+        rename::git(root, &["rev-list", "--count", range])
+            .and_then(|s| s.trim().parse().ok())
+            .unwrap_or(0)
+    };
+    let behind = count("HEAD..@{u}");
+    let ahead = count("@{u}..HEAD");
+    if behind == 0 {
+        return ("update", format!("{name}: up to date"));
+    }
+    if ahead > 0 {
+        return (
+            "skipped",
+            format!(
+                "{name}: diverged from {} ({ahead} local, {behind} upstream), not updated",
+                upstream.trim()
+            ),
+        );
+    }
+    if rename::git(root, &["status", "--porcelain", "--untracked-files=no"])
+        .is_some_and(|s| !s.is_empty())
+    {
+        return (
+            "skipped",
+            format!("{name}: uncommitted changes, not updated"),
+        );
+    }
+    let short = || {
+        rename::git(root, &["rev-parse", "--short", "HEAD"])
+            .unwrap_or_default()
+            .trim()
+            .to_string()
+    };
+    let old = short();
+    if rename::git(root, &["merge", "--ff-only", "--quiet", "@{u}"]).is_none() {
+        return (
+            "warning",
+            format!("{name}: fast-forward failed, not updated"),
+        );
+    }
+    let new = short();
+    let commits = if behind == 1 { "commit" } else { "commits" };
+    (
+        "update",
+        format!("{name}: {old}..{new} ({behind} {commits})"),
+    )
 }
 
 /// Return the source path for a skills entry (path-based or repo-based).

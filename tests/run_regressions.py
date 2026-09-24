@@ -334,6 +334,69 @@ class RegressionTest(unittest.TestCase):
         new_head = self.git(cache, "rev-parse", "HEAD").stdout.strip()
         self.assertNotEqual(new_head, old_head)
 
+    def make_upstream_and_checkout(self, name: str) -> tuple[Path, Path]:
+        """An upstream repo with one skill, and a clone of it under ~/src."""
+        upstream = Path(self.sb.dir) / "upstream" / name
+        (upstream / "skills" / name).mkdir(parents=True)
+        (upstream / "skills" / name / "SKILL.md").write_text("one\n")
+        self.git(upstream, "init", "-q", "-b", "main")
+        self.git(upstream, "add", ".")
+        self.git(upstream, "commit", "-qm", "one")
+        checkout = self.home / "src" / name
+        checkout.parent.mkdir(parents=True, exist_ok=True)
+        self.git(checkout.parent, "clone", "-q", upstream.as_uri(), name)
+        return upstream, checkout
+
+    def advance(self, upstream: Path, name: str, text: str) -> None:
+        (upstream / "skills" / name / "SKILL.md").write_text(text)
+        self.git(upstream, "commit", "-qam", text.strip())
+
+    def test_update_fast_forwards_only_safe_checkouts(self) -> None:
+        names = ("behind", "dirty", "diverged", "detached")
+        pairs = {n: self.make_upstream_and_checkout(n) for n in names}
+        for n, (upstream, _) in pairs.items():
+            self.advance(upstream, n, "two\n")
+        (pairs["dirty"][1] / "skills" / "dirty" / "SKILL.md").write_text("mine\n")
+        diverged = pairs["diverged"][1]
+        (diverged / "local.txt").write_text("local\n")
+        self.git(diverged, "add", ".")
+        self.git(diverged, "commit", "-qm", "local")
+        self.git(pairs["detached"][1], "checkout", "-q", "--detach")
+        heads = {n: self.git(c, "rev-parse", "HEAD").stdout for n, (_, c) in pairs.items()}
+
+        manifest = json.loads(self.manifest.read_text())
+        manifest["skill_repos"] = [{"path": f"${{HOME}}/src/{n}"} for n in names]
+        self.manifest.write_text(json.dumps(manifest, indent=2) + "\n")
+
+        result = self.run_tool("--update")
+        self.assert_ok(result)
+        out = result.stdout
+        self.assertRegex(out, r"update: behind: \w+\.\.\w+ \(1 commit\)")
+        self.assertIn("skipped: dirty: uncommitted changes, not updated", out)
+        self.assertIn(
+            "skipped: diverged: diverged from origin/main (1 local, 1 upstream), "
+            "not updated",
+            out,
+        )
+        self.assertIn("skipped: detached: no upstream branch, not updated", out)
+        linked = self.home / ".agents" / "skills" / "behind" / "SKILL.md"
+        self.assertEqual(linked.read_text(), "two\n")
+        for n in ("dirty", "diverged", "detached"):
+            head = self.git(pairs[n][1], "rev-parse", "HEAD").stdout
+            self.assertEqual(head, heads[n], n)
+        self.assertEqual(
+            (pairs["dirty"][1] / "skills" / "dirty" / "SKILL.md").read_text(), "mine\n"
+        )
+
+        again = self.run_tool("--update")
+        self.assert_ok(again)
+        self.assertIn("update: behind: up to date", again.stdout)
+
+    def test_update_refuses_dry_run(self) -> None:
+        result = self.run_tool("--update", "--dry-run")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("cannot be combined with --dry-run", result.stderr)
+
 
 @unittest.skipIf(bool(os.environ.get("QBRANCH_BIN")), "Python implementation only")
 class PythonAtomicWriteTest(unittest.TestCase):

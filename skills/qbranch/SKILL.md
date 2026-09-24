@@ -88,6 +88,9 @@ them.
   audits and rename fixes only inspect existing checkouts; an uncached source appears as
   missing in a dry-run plan and is fetched when the sync is applied. On a name collision a
   manifest skill wins, then earlier repos over later ones.
+- Local checkouts (`skill_repos` paths and `~/src/<repo-name>`) are never pulled by a
+  plain sync. `qbranch --update` fetches each one and fast-forwards it when it is clean
+  and strictly behind its upstream; anything else is reported and left alone.
 - `links`: `{src, dst}`, anything linked anywhere. Entries with a destination under
   `~/.claude/` are skipped where Claude Code is absent, under `~/.gemini/` where Antigravity
   is, so one manifest serves a machine with either, both or neither.
@@ -129,6 +132,8 @@ current directory when it holds `manifests/`, so `cd my-agent-config && qbranch`
 ```
 qbranch                          sync with the remembered root and manifest
 qbranch --dry-run [--json]       the plan, changing nothing; JSON for machine reading
+qbranch --update                 fast-forward the skill checkouts first, then sync; a
+                                 dirty, diverged or upstream-less checkout is left alone
 qbranch --list                   manifests in the config root
 qbranch --add-skill NAME         add a skill to the remembered manifest; --all for every manifest
 qbranch --add-skill https://HOST/OWNER/REPO/PATH   a repo entry cloned over https; a public

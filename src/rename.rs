@@ -153,7 +153,7 @@ pub fn git_root(p: &Path) -> Option<PathBuf> {
     None
 }
 
-fn git(root: &Path, rest: &[&str]) -> Option<String> {
+pub fn git(root: &Path, rest: &[&str]) -> Option<String> {
     let mut argv: Vec<String> = vec!["git".into(), "-C".into(), display(root)];
     argv.extend(rest.iter().map(|s| s.to_string()));
     match proc::run_capture(&argv, None) {
