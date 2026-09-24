@@ -281,6 +281,11 @@ pub fn write_json_private(p: &Path, v: &Json) -> io::Result<()> {
     write_atomic(p, &bytes, true, false)
 }
 
+/// Atomically write bytes, keeping an existing file's mode.
+pub fn write_bytes(p: &Path, bytes: &[u8]) -> io::Result<()> {
+    write_atomic(p, bytes, false, true)
+}
+
 /// Atomically write owner-only bytes without following a destination link.
 pub fn write_private(p: &Path, bytes: &[u8]) -> io::Result<()> {
     write_atomic(p, bytes, true, false)

@@ -26,6 +26,11 @@ that declares the CAD plugins, listed by the two Macs.
 a release archive, a source build. Each is an arm of the release train, because a green test
 suite says nothing about whether a package installs.
 
+**Claude apps.** Anthropic's chat apps: claude.ai in a browser and the desktop app. They take
+skills as zip files uploaded in Settings, not from a directory on disk, so qbranch cannot link
+into them; `--export-zips` prepares the uploads instead. A skill uploaded there can also load in
+Claude Code sessions on the same account.
+
 **Claude Code.** Anthropic's coding agent. It keeps its state under `~/.claude/` (or the
 directory named by `CLAUDE_CONFIG_DIR`).
 
@@ -42,6 +47,11 @@ its skills are also linked from a checkout. qbranch warns about it.
 
 **Dry run.** `--dry-run`: compute and print the plan without changing anything. `--json` prints
 that plan as JSON.
+
+**Export directory.** The directory `--export-zips DIR` writes: a `<skill>.zip` per skill,
+`export.json` marking each `new`, `changed` or `current`, and `uploaded/`, where whatever
+uploads the zips keeps a copy of each one it has uploaded. Those copies are how the next export
+tells what changed.
 
 **Fragment.** See settings fragment.
 

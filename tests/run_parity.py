@@ -11,6 +11,8 @@ timestamp masked). The report modes that have no corpus expectation are
 diffed the same way: --plugin-status and --audit in text and --json form,
 --list, and --skill (the listing, one skill, and an unknown name), which is
 what holds the port's embedded skills to the reference's skills/ directory.
+--export-zips is diffed with the tree it writes, so both implementations
+must produce the same zip bytes.
 
   python3 tests/run_parity.py                      after cargo build --release
   python3 tests/run_parity.py --bin path/to/qbranch
@@ -18,6 +20,7 @@ what holds the port's embedded skills to the reference's skills/ directory.
 """
 import argparse
 import difflib
+import hashlib
 import json
 import os
 import sys
@@ -37,6 +40,10 @@ REPORT_MODES = (
     ["--skill", "agent-audit"],
     ["--skill", "no-such-skill"],
 )
+# Modes that write files: the tree is diffed as well as the output.
+WRITE_MODES = (
+    ["--export-zips", "export"],
+)
 
 
 def tree(sb: Sandbox) -> dict:
@@ -54,6 +61,8 @@ def tree(sb: Sandbox) -> dict:
             out[key] = "-> " + sb.norm(os.readlink(p))
         elif p.is_dir():
             out[key] = "dir"
+        elif p.suffix == ".zip":
+            out[key] = "zip " + hashlib.sha256(p.read_bytes()).hexdigest()
         elif p.suffix == ".json":
             try:
                 d = json.loads(p.read_text())
@@ -113,12 +122,13 @@ def main() -> int:
                      snapshot(name, python, [], True),
                      snapshot(name, [str(port)], [], True))
         failed += not ok
-        for extra in REPORT_MODES:
+        for extra in REPORT_MODES + WRITE_MODES:
+            with_tree = extra in WRITE_MODES
             ok = compare(f"{name} {' '.join(extra)}",
-                         snapshot(name, python, extra, False),
-                         snapshot(name, [str(port)], extra, False))
+                         snapshot(name, python, extra, with_tree),
+                         snapshot(name, [str(port)], extra, with_tree))
             failed += not ok
-    total = len(names) * (1 + len(REPORT_MODES))
+    total = len(names) * (1 + len(REPORT_MODES) + len(WRITE_MODES))
     print(f"\n{total - failed}/{total} runs identical")
     return 1 if failed else 0
 

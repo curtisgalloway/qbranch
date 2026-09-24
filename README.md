@@ -110,6 +110,7 @@ qbranch --list                # manifests in the config root
 qbranch --plugin-status       # managed / unmanaged plugins on this machine
 qbranch --manage-plugin <id> --in base|host [--value false]
 qbranch --audit               # collisions, double loads, duplicate MCP servers, context budget
+qbranch --export-zips <dir>   # a zip per skill for upload to the Claude apps, with what changed
 qbranch --add-skill <name>    # add a skill to the remembered manifest
 qbranch --add-skill https://github.com/<owner>/<repo>/<path>   # ...from a public repo, over https
 qbranch --add-skill git://<host>/<owner>/<repo>/<path>         # ...over SSH, which needs a key

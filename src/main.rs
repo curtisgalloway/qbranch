@@ -10,6 +10,7 @@
 mod audit;
 mod copy;
 mod ctx;
+mod export;
 mod manifest;
 mod paths;
 mod plugins;
@@ -137,7 +138,15 @@ struct Cli {
     #[arg(long)]
     audit: bool,
 
-    /// With --plugin-status or --audit: machine-readable output.
+    /// Write each of the target manifest's skills to DIR/<skill>.zip for
+    /// upload to the Claude apps, and DIR/export.json marking each new,
+    /// changed or current against the copies in DIR/uploaded/; then exit.
+    /// Links nothing and changes no checkout.
+    #[arg(long, value_name = "DIR")]
+    export_zips: Option<String>,
+
+    /// With --plugin-status, --audit or --export-zips: machine-readable
+    /// output.
     #[arg(long)]
     json: bool,
 
@@ -230,10 +239,36 @@ fn run() -> i32 {
         return manifest::upgrade_manifests(&ctx);
     }
 
-    if args.plugin_status || args.manage_plugin.is_some() || args.audit {
+    if args.plugin_status
+        || args.manage_plugin.is_some()
+        || args.audit
+        || args.export_zips.is_some()
+    {
         let state = state::load_state(&state_path);
         state::resolve_root(&mut ctx, args.root.as_deref(), &state);
         let manifest_name = state::choose_manifest(&ctx, args.manifest.as_deref(), &state);
+        if let Some(dir) = &args.export_zips {
+            let (manifest, _) = manifest::load_manifest(&ctx, &manifest_name);
+            let mut out_dir = paths::expanduser(&paths::clean(dir), &ctx.home);
+            if out_dir.is_relative() {
+                out_dir = std::env::current_dir().unwrap_or_default().join(out_dir);
+            }
+            let (report, warnings, fails) =
+                export::export_zips(&ctx, &manifest_name, &manifest, &skills_target, &out_dir);
+            if args.json {
+                let mut out = report;
+                out.insert("warnings".to_string(), json!(warnings));
+                out.insert("errors".to_string(), json!(fails));
+                println!("{}", util::pretty(&Json::Object(out)));
+            } else {
+                for w in &warnings {
+                    println!("warning: {w}");
+                }
+                export::print_export(&report, &out_dir);
+                print_errors(&fails);
+            }
+            return if fails.is_empty() { 0 } else { 1 };
+        }
         if args.audit {
             let (manifest, _) = manifest::load_manifest(&ctx, &manifest_name);
             let (report, fails) =

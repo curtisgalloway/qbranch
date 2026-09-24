@@ -148,12 +148,33 @@ qbranch --fix-renames            repoint entries whose skill directory moved in 
 qbranch --plugin-status [--json] managed / unmanaged / no-longer-managed plugins here
 qbranch --manage-plugin ID --in base|host [--value false]   declare a plugin in a fragment
 qbranch --audit [--json]         collisions, double loads, duplicate MCP servers, context budget
+qbranch --export-zips DIR [--json]   a zip per skill for upload to the Claude apps; see below
 qbranch --upgrade-manifests      rewrite older manifests at the current schema
 qbranch --skill [NAME]           this skill and its siblings, review-plugins and agent-audit
 ```
 
 Every editing command changes the config root only. Run `qbranch` afterwards to apply, and
 commit the config root so other machines pick the change up on their next sync.
+
+## Skills for the Claude apps
+
+The Claude apps (claude.ai and the desktop app) take skills as uploaded zips, not from a
+directory, so qbranch cannot link into them. `qbranch --export-zips DIR` prepares the uploads
+instead, for the same skills a sync would link, and changes nothing else:
+
+- `DIR/<skill>.zip`, one per skill, with the skill's directory at the top. Dotfiles,
+  `__pycache__`, `*.pyc`, `node_modules` and any directory holding a `CACHEDIR.TAG` (cargo's
+  `target/`) are left out. An unchanged skill exports byte for byte the same zip.
+- `DIR/export.json`: each skill `new`, `changed` or `current`, judged against
+  `DIR/uploaded/<skill>.zip`, and `dropped`, the uploaded skills the manifest no longer has.
+  `dropped` stays empty whenever the export reported an error, so a missing checkout never
+  reads as its skills being dropped.
+
+Whatever does the uploading owns `DIR/uploaded/`: after a skill uploads successfully, copy its
+zip there. Upload `new` and `changed` skills (Settings, Skills, Add, Upload skill; replacing an
+existing skill keeps its version history), and turn `dropped` ones off rather than removing
+them. A skill uploaded to the apps can also load in Claude Code sessions on the same account,
+so on a machine qbranch already syncs, export only what that machine does not link itself.
 
 ## When a sync says a source is missing
 

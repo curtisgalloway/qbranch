@@ -11,6 +11,7 @@ import runpy
 import stat
 import subprocess
 import unittest
+import zipfile
 from pathlib import Path
 from unittest import mock
 
@@ -396,6 +397,94 @@ class RegressionTest(unittest.TestCase):
         result = self.run_tool("--update", "--dry-run")
         self.assertEqual(result.returncode, 1)
         self.assertIn("cannot be combined with --dry-run", result.stderr)
+
+
+class ExportZipsTest(unittest.TestCase):
+    """--export-zips: what goes in a zip, and new / changed / current / dropped."""
+
+    tearDown = RegressionTest.tearDown
+    write_manifest = RegressionTest.write_manifest
+    run_tool = RegressionTest.run_tool
+
+    def export(self, *extra: str) -> tuple[int, dict]:
+        r = self.run_tool("--export-zips", str(self.out), "--json", *extra)
+        return r.returncode, json.loads(r.stdout)
+
+    def setUp(self) -> None:
+        RegressionTest.setUp(self)
+        self.out = Path(self.sb.dir) / "export"
+        self.alpha = self.root / "skills" / "alpha"
+        for rel in (".git/HEAD", "__pycache__/x.pyc", "helper.pyc",
+                    "node_modules/m.js", "tool/target/CACHEDIR.TAG",
+                    "tool/target/big.bin"):
+            p = self.alpha / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text("junk\n", encoding="utf-8")
+        (self.alpha / "tool" / "main.rs").write_text("fn main() {}\n", encoding="utf-8")
+        (self.alpha / "run.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+        (self.alpha / "run.sh").chmod(0o755)
+        self.write_manifest(skills=[
+            {"name": "alpha", "path": "${QBRANCH_ROOT}/skills/alpha"},
+            {"name": "beta", "path": "${QBRANCH_ROOT}/skills/beta"},
+        ])
+
+    def statuses(self, report: dict) -> dict:
+        return {s["name"]: s["status"] for s in report["skills"]}
+
+    def test_zip_holds_the_skill_without_dotfiles_or_build_output(self) -> None:
+        rc, report = self.export()
+        self.assertEqual(rc, 0, report)
+        with zipfile.ZipFile(self.out / "alpha.zip") as z:
+            self.assertIsNone(z.testzip())
+            self.assertEqual(sorted(z.namelist()), [
+                "alpha/", "alpha/SKILL.md", "alpha/run.sh", "alpha/tool/",
+                "alpha/tool/main.rs"])
+            mode = z.getinfo("alpha/run.sh").external_attr >> 16
+            if not WINDOWS:
+                self.assertEqual(mode, 0o100755)
+
+    def test_statuses_follow_the_uploaded_copies(self) -> None:
+        rc, report = self.export()
+        self.assertEqual(rc, 0, report)
+        self.assertEqual(self.statuses(report), {"alpha": "new", "beta": "new"})
+        first = (self.out / "alpha.zip").read_bytes()
+
+        uploaded = self.out / "uploaded"
+        uploaded.mkdir()
+        for name in ("alpha", "beta"):
+            (uploaded / f"{name}.zip").write_bytes((self.out / f"{name}.zip").read_bytes())
+        rc, report = self.export()
+        self.assertEqual(self.statuses(report), {"alpha": "current", "beta": "current"})
+        self.assertEqual((self.out / "alpha.zip").read_bytes(), first)
+
+        (self.alpha / "SKILL.md").write_text("alpha changed\n", encoding="utf-8")
+        rc, report = self.export()
+        self.assertEqual(self.statuses(report)["alpha"], "changed")
+
+        self.write_manifest(skills=[
+            {"name": "beta", "path": "${QBRANCH_ROOT}/skills/beta"}])
+        rc, report = self.export()
+        self.assertEqual(rc, 0, report)
+        self.assertEqual(self.statuses(report), {"beta": "current"})
+        self.assertEqual(report["dropped"], ["alpha"])
+        self.assertFalse((self.out / "alpha.zip").exists())
+        self.assertEqual(json.loads((self.out / "export.json").read_text()),
+                         {k: report[k] for k in ("manifest", "skills", "dropped")})
+
+    def test_a_failure_reports_nothing_dropped(self) -> None:
+        uploaded = self.out / "uploaded"
+        uploaded.mkdir(parents=True)
+        (uploaded / "gone.zip").write_bytes(b"")
+        self.write_manifest(skills=[
+            {"name": "beta", "path": "${QBRANCH_ROOT}/skills/beta"},
+            {"name": "ghost", "path": "${QBRANCH_ROOT}/skills/ghost"},
+        ])
+        rc, report = self.export()
+        self.assertEqual(rc, 1)
+        self.assertEqual(self.statuses(report), {"beta": "new"})
+        self.assertEqual(report["dropped"], [])
+        self.assertEqual(len(report["errors"]), 1)
+        self.assertIn("ghost: no SKILL.md in", report["errors"][0])
 
 
 @unittest.skipIf(bool(os.environ.get("QBRANCH_BIN")), "Python implementation only")
