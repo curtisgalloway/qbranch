@@ -126,6 +126,12 @@ Otherwise the repo is cloned (and kept updated) under
 manifest records it, so an https:// URL reaches a public repo without an
 account or a key, and an SSH URL needs one.
 
+`--update` also brings the local checkouts up to date before the sync:
+every `skill_repos` checkout and the ~/src/<repo-name> checkout of a
+repo-based entry is fetched and fast-forwarded to its upstream. Only a
+clean checkout that is strictly behind moves; one with uncommitted
+changes, local commits or no upstream branch is reported and left alone.
+
 Both local path and dst fields support:
   - ${QBRANCH_ROOT}       (the config root)
   - any environment variable via ${VAR}
@@ -154,6 +160,10 @@ The script:
     managed / unmanaged / no longer managed; `--manage-plugin ID --in
     base|host [--value false]` declares one in a fragment. The
     review-plugins skill drives these two to triage unmanaged plugins.
+  - `--export-zips DIR [--json]` writes the manifest's skills as one zip
+    per skill for upload to the Claude apps, which take skills by upload
+    rather than from a directory, with DIR/export.json saying which are
+    new, changed or current against the copies kept in DIR/uploaded/.
   - `--dry-run --json` prints the plan as JSON: the actions, plugin
     actions and messages a sync would produce. tests/run_corpus.py
     compares it against the corpus under tests/corpus/, which is the
@@ -170,8 +180,10 @@ import shutil
 import socket
 import stat
 import subprocess
+import struct
 import sys
 import tempfile
+import zlib
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
@@ -312,6 +324,82 @@ def prepare_skill_repos(manifest: dict) -> None:
             seen.add(repo)
 
 
+UPDATE_FETCH_TIMEOUT = 120
+
+
+def update_checkouts(manifest: dict) -> list[tuple[str, str]]:
+    """--update: fast-forward the checkouts the manifest's skills come from.
+
+    Covers the ~/src/<name> checkout a repo-based `skills` entry resolves to
+    and every `skill_repos` checkout; the ~/.agents/skill-repos clones are
+    pulled by every sync already. A checkout moves only when its tree is
+    clean and its branch is strictly behind its upstream; anything else is
+    reported and left alone, since these are often checkouts someone works
+    in. Returns (level, text) messages for the plan.
+    """
+    out: list[tuple[str, str]] = []
+    seen: set[Path] = set()
+
+    def visit(root: Path) -> None:
+        if root not in seen:
+            seen.add(root)
+            out.append(update_checkout(root))
+
+    for entry in manifest.get("skills", []):
+        repo = entry.get("repo")
+        if repo is None:
+            continue
+        local = Path.home() / "src" / repo_name_from_url(repo)
+        if local.is_dir() and (local / ".git").exists():
+            visit(local)
+    for spec in manifest.get("skill_repos", []):
+        if isinstance(spec, str):
+            spec = {"path": spec}
+        path = expand_path(spec["path"])
+        if not path.is_dir():
+            continue  # reported as a missing skill repo by the plan
+        root = git_root(path)
+        if root is None:
+            out.append(("skipped", f"{path}: not a git checkout, not updated"))
+        else:
+            visit(root)
+    return out
+
+
+def update_checkout(root: Path) -> tuple[str, str]:
+    """Fast-forward one checkout to its upstream if that is safe."""
+    name = root.name
+    upstream = git_out(root, "rev-parse", "--abbrev-ref",
+                       "--symbolic-full-name", "@{u}")
+    if upstream is None:
+        return ("skipped", f"{name}: no upstream branch, not updated")
+    try:
+        fetch = subprocess.run(
+            ["git", "-C", str(root), "fetch", "--quiet"],
+            capture_output=True, text=True, stdin=subprocess.DEVNULL,
+            timeout=UPDATE_FETCH_TIMEOUT)
+        fetched = fetch.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        fetched = False
+    if not fetched:
+        return ("warning", f"{name}: git fetch failed, not updated")
+    behind = int((git_out(root, "rev-list", "--count", "HEAD..@{u}") or "0").strip())
+    ahead = int((git_out(root, "rev-list", "--count", "@{u}..HEAD") or "0").strip())
+    if behind == 0:
+        return ("update", f"{name}: up to date")
+    if ahead:
+        return ("skipped", f"{name}: diverged from {upstream.strip()} "
+                           f"({ahead} local, {behind} upstream), not updated")
+    if git_out(root, "status", "--porcelain", "--untracked-files=no"):
+        return ("skipped", f"{name}: uncommitted changes, not updated")
+    old = (git_out(root, "rev-parse", "--short", "HEAD") or "").strip()
+    if git_out(root, "merge", "--ff-only", "--quiet", "@{u}") is None:
+        return ("warning", f"{name}: fast-forward failed, not updated")
+    new = (git_out(root, "rev-parse", "--short", "HEAD") or "").strip()
+    commits = "commit" if behind == 1 else "commits"
+    return ("update", f"{name}: {old}..{new} ({behind} {commits})")
+
+
 def resolve_skill_src(entry: dict) -> Path:
     """Return the source Path for a skills entry (path-based or repo-based)."""
     if "repo" in entry:
@@ -440,7 +528,7 @@ def load_manifest(name: str) -> tuple[dict, list[str]]:
 
 
 def atomic_write(
-    path: Path, text: str, private: bool = False, follow_symlinks: bool = True
+    path: Path, text: str | bytes, private: bool = False, follow_symlinks: bool = True
 ) -> None:
     """Replace a file only after its complete replacement has been written."""
     if follow_symlinks and path.is_symlink():
@@ -450,7 +538,9 @@ def atomic_write(
         mode = stat.S_IMODE(path.stat().st_mode)
     with tempfile.TemporaryDirectory(prefix=".qbranch-write-", dir=path.parent) as tmp:
         staged = Path(tmp) / "new"
-        with staged.open("x", encoding="utf-8") as stream:
+        opened = (staged.open("xb") if isinstance(text, bytes)
+                  else staged.open("x", encoding="utf-8"))
+        with opened as stream:
             staged.chmod(0o600)
             stream.write(text)
             stream.flush()
@@ -2038,6 +2128,187 @@ def migrate_skills_dir(dst: Path, src: Path, copying: bool) -> str | None:
     return None
 
 
+# --export-zips writes the manifest's skills as one zip per skill, for a
+# harness that installs skills by upload (the Claude web and desktop apps)
+# rather than from a directory qbranch can link into. The uploader keeps a
+# copy of each zip it has uploaded under uploaded/, which is how the next
+# export tells a changed skill from a current one without state of its own.
+EXPORT_INDEX = "export.json"
+EXPORT_UPLOADED = "uploaded"
+# 1980-01-01 00:00, the earliest DOS timestamp. Every entry carries it, so a
+# zip's bytes depend on the skill's files alone and an unchanged skill
+# exports byte for byte the same.
+ZIP_DOS_DATE = (1 << 5) | 1
+ZIP_DOS_TIME = 0
+ZIP_LIMIT = 0xFFFFFFFF
+
+
+def export_includes(rel: tuple[str, ...]) -> bool:
+    """Whether a path inside a skill directory goes into its export zip.
+
+    `rel` is the path's components relative to the skill directory, e.g.
+    ("scripts", "check.py"); a directory that is left out is not descended
+    into. Called for files and directories alike. Dotfiles go (.git, a
+    plugin's .claude-plugin), and so does build output, which changes
+    without the skill changing and would otherwise force a re-upload.
+    """
+    last = rel[-1]
+    return not (last.startswith(".") or last in ("__pycache__", "node_modules")
+                or last.endswith(".pyc"))
+
+
+def skill_zip_entries(name: str, src: Path) -> list[tuple[str, bytes | None, bool]]:
+    """(path in the zip, contents or None for a directory, executable) for
+    every entry of skill directory `src`, under a top directory `name`/,
+    sorted by path. Symbolic links to files are followed; links to
+    directories, and anything that is neither file nor directory, are left out.
+    So is a directory holding a CACHEDIR.TAG, the marker build tools such as
+    cargo put in their output directories.
+    """
+    entries: list[tuple[str, bytes | None, bool]] = [(f"{name}/", None, False)]
+
+    def walk(d: Path, rel: tuple[str, ...]) -> None:
+        for child in d.iterdir():
+            parts = rel + (child.name,)
+            if not export_includes(parts):
+                continue
+            path = f"{name}/" + "/".join(parts)
+            if child.is_dir() and not child.is_symlink():
+                if (child / "CACHEDIR.TAG").is_file():
+                    continue
+                entries.append((path + "/", None, False))
+                walk(child, parts)
+            elif child.is_file():
+                executable = os.name != "nt" and bool(child.stat().st_mode & 0o100)
+                entries.append((path, child.read_bytes(), executable))
+
+    walk(src, ())
+    return sorted(entries, key=lambda e: e[0].encode("utf-8"))
+
+
+def build_zip(entries: list[tuple[str, bytes | None, bool]]) -> bytes:
+    """A stored (uncompressed) zip archive of `entries`, with UTF-8 names,
+    Unix permissions and fixed timestamps; raises ValueError past the plain
+    (non-Zip64) format's limits."""
+    body = bytearray()
+    central = bytearray()
+    for path, data, executable in entries:
+        raw = path.encode("utf-8")
+        content = data if data is not None else b""
+        crc = zlib.crc32(content)
+        if data is None:
+            attrs = (0o040755 << 16) | 0x10
+        else:
+            attrs = (0o100755 if executable else 0o100644) << 16
+        offset = len(body)
+        if len(content) > ZIP_LIMIT or offset > ZIP_LIMIT:
+            raise ValueError("larger than 4 GiB")
+        body += struct.pack("<IHHHHHIIIHH", 0x04034B50, 20, 0x0800, 0,
+                            ZIP_DOS_TIME, ZIP_DOS_DATE, crc, len(content),
+                            len(content), len(raw), 0)
+        body += raw + content
+        central += struct.pack("<IHHHHHHIIIHHHHHII", 0x02014B50, 0x0314, 20,
+                               0x0800, 0, ZIP_DOS_TIME, ZIP_DOS_DATE, crc,
+                               len(content), len(content), len(raw), 0, 0, 0,
+                               0, attrs, offset)
+        central += raw
+    if len(entries) > 0xFFFF or len(body) > ZIP_LIMIT:
+        raise ValueError("more than 65535 files" if len(entries) > 0xFFFF
+                         else "larger than 4 GiB")
+    end = struct.pack("<IHHHHIIH", 0x06054B50, 0, 0, len(entries),
+                      len(entries), len(central), len(body), 0)
+    return bytes(body + central + end)
+
+
+def export_zips(
+    manifest_name: str, manifest: dict, skills_target: Path, out_dir: Path
+) -> tuple[dict, list[str], list[str]]:
+    """Write DIR/<skill>.zip for every skill the manifest links, and
+    DIR/export.json classifying each against DIR/uploaded/<skill>.zip.
+
+    Returns (report, warnings, failures). A skill is `new` when nothing has
+    been uploaded for it, `changed` when its zip differs from the uploaded
+    one and `current` when they match. `dropped` lists uploaded skills the
+    manifest no longer has; it stays empty while anything failed, since a
+    missing checkout would otherwise read as every one of its skills dropped.
+    """
+    skills: list[tuple[str, Path]] = []
+    seen: set[Path] = set()
+    for entry in manifest.get("skills", []):
+        dst = skills_target / entry["name"]
+        if dst in seen:
+            sys.exit(f"duplicate destination in manifest: {dst}")
+        seen.add(dst)
+        skills.append((entry["name"], resolve_skill_src(entry)))
+    repo_entries, warnings, missing_repos, _, _ = collect_repo_skills(
+        manifest, skills_target, seen)
+    skills.extend((label, src) for label, src, _ in repo_entries)
+    fails = [f"skill repo {repo} not found — clone it, or drop it from the "
+             f"manifest's skill_repos" for repo in missing_repos]
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    index = out_dir / EXPORT_INDEX
+    previous: set[str] = set()
+    if index.is_file():
+        try:
+            previous = {s["name"] for s in json.loads(index.read_text())["skills"]}
+        except (json.JSONDecodeError, KeyError, TypeError):
+            pass
+
+    rows: list[dict] = []
+    failed: set[str] = set()
+    for name, src in sorted(skills):
+        if not (src / "SKILL.md").is_file():
+            fails.append(f"{name}: no SKILL.md in {src}")
+            failed.add(name)
+            continue
+        zip_path = out_dir / f"{name}.zip"
+        try:
+            data = build_zip(skill_zip_entries(name, src))
+            if not zip_path.is_file() or zip_path.read_bytes() != data:
+                atomic_write(zip_path, data)
+        except (OSError, ValueError) as e:
+            fails.append(f"{name}: {e}")
+            failed.add(name)
+            continue
+        uploaded = out_dir / EXPORT_UPLOADED / f"{name}.zip"
+        if not uploaded.is_file():
+            status = "new"
+        elif uploaded.read_bytes() == data:
+            status = "current"
+        else:
+            status = "changed"
+        rows.append({"name": name, "zip": zip_path.name, "status": status})
+
+    exported = {r["name"] for r in rows}
+    for name in sorted(previous - exported - failed):
+        stale = out_dir / f"{name}.zip"
+        if stale.is_file():
+            stale.unlink()
+    dropped: list[str] = []
+    if not fails and (out_dir / EXPORT_UPLOADED).is_dir():
+        for p in (out_dir / EXPORT_UPLOADED).iterdir():
+            stem = p.name[:-len(".zip")]
+            if p.name.endswith(".zip") and stem and p.is_file() and stem not in exported:
+                dropped.append(stem)
+        dropped.sort()
+    report = {"manifest": manifest_name, "skills": rows, "dropped": dropped}
+    write_json(index, report)
+    return report, warnings, fails
+
+
+def print_export(report: dict, out_dir: Path) -> None:
+    for row in report["skills"]:
+        print(f"  {row['status']:<8} {row['name']}")
+    for name in report["dropped"]:
+        print(f"  {'dropped':<8} {name}  (not in the manifest; turn it off)")
+    pending = sum(r["status"] != "current" for r in report["skills"])
+    if pending:
+        print(f"\n{pending} to upload from {out_dir}")
+    else:
+        print(f"\nnothing to upload from {out_dir}")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description="Sync agent state from a manifest into the local filesystem.",
@@ -2067,6 +2338,12 @@ def main() -> int:
                          "symlinks), auto (symlink, falling back to copy on "
                          "Windows without Developer Mode). Remembered like "
                          "--root; auto forgets.")
+    ap.add_argument("--update", "-u", action="store_true",
+                    help="Before syncing, fetch and fast-forward the git "
+                         "checkouts skills come from (skill_repos, and the "
+                         "~/src checkout of a repo-based skill). A checkout "
+                         "with uncommitted changes, no upstream or local "
+                         "commits is reported and left alone.")
     ap.add_argument("--list", action="store_true",
                     help="List available manifests and exit.")
     ap.add_argument("--add-skill", "-a", metavar="SKILL",
@@ -2120,8 +2397,15 @@ def main() -> int:
                          "machine against the target manifest and report "
                          "collisions, double loads, duplicates, dead weight "
                          "and the context budget; then exit.")
+    ap.add_argument("--export-zips", metavar="DIR",
+                    help="Write each of the target manifest's skills to "
+                         "DIR/<skill>.zip for upload to the Claude apps, and "
+                         "DIR/export.json marking each new, changed or "
+                         "current against the copies in DIR/uploaded/; then "
+                         "exit. Links nothing and changes no checkout.")
     ap.add_argument("--json", action="store_true",
-                    help="With --plugin-status or --audit: machine-readable output.")
+                    help="With --plugin-status, --audit or --export-zips: "
+                         "machine-readable output.")
     ap.add_argument("--manage-plugin", metavar="ID",
                     help="Declare plugin ID (name@marketplace) in a fragment of "
                          "the target manifest and exit. Needs --in; see --value.")
@@ -2152,10 +2436,25 @@ def main() -> int:
         resolve_root(args.root, load_state(state_path))
         return upgrade_manifests()
 
-    if args.plugin_status or args.manage_plugin or args.audit:
+    if args.plugin_status or args.manage_plugin or args.audit or args.export_zips:
         state = load_state(state_path)
         resolve_root(args.root, state)
         manifest_name = choose_manifest(args.manifest, state)
+        if args.export_zips:
+            manifest, _ = load_manifest(manifest_name)
+            out_dir = Path(args.export_zips).expanduser().absolute()
+            report, warnings, fails = export_zips(
+                manifest_name, manifest, skills_target, out_dir)
+            if args.json:
+                print(json.dumps({**report, "warnings": warnings,
+                                  "errors": fails}, indent=2))
+            else:
+                for w in warnings:
+                    print(f"warning: {w}")
+                print_export(report, out_dir)
+                for f in fails:
+                    print(f"ERROR: {f}", file=sys.stderr)
+            return 1 if fails else 0
         if args.audit:
             manifest, _ = load_manifest(manifest_name)
             report, fails = audit(manifest_name, manifest, state, skills_target)
@@ -2202,6 +2501,9 @@ def main() -> int:
         resolve_root(args.root, state)
         return fix_renames(args, state)
 
+    if args.update and args.dry_run:
+        sys.exit("--update moves checkouts, so it cannot be combined with "
+                 "--dry-run; run qbranch --update to update and sync")
     if args.json and not args.dry_run:
         sys.exit("--json on a sync needs --dry-run (it prints the plan); "
                  "--plugin-status and --audit have their own JSON reports")
@@ -2354,6 +2656,9 @@ def sync(args: argparse.Namespace, skills_target: Path, state_path: Path) -> int
         elif manifest.get(mkey):
             settings_notes.append(f"{agent} settings: skipped (not installed)")
 
+    if args.update:
+        for level, text in update_checkouts(manifest):
+            say(level, text)
     if not args.dry_run:
         prepare_skill_repos(manifest)
     desired, skipped = collect_desired(manifest, skills_target, claude_ok, agy_ok)

@@ -104,11 +104,13 @@ Everyday commands:
 qbranch                       # sync with the remembered root and manifest
 qbranch --dry-run             # show the plan, change nothing
 qbranch --dry-run --json      # the same plan as JSON
+qbranch --update              # fast-forward clean skill checkouts, then sync
 qbranch --link-mode copy      # copies instead of links, from now on; --link-mode auto forgets
 qbranch --list                # manifests in the config root
 qbranch --plugin-status       # managed / unmanaged plugins on this machine
 qbranch --manage-plugin <id> --in base|host [--value false]
 qbranch --audit               # collisions, double loads, duplicate MCP servers, context budget
+qbranch --export-zips <dir>   # a zip per skill for upload to the Claude apps, with what changed
 qbranch --add-skill <name>    # add a skill to the remembered manifest
 qbranch --add-skill https://github.com/<owner>/<repo>/<path>   # ...from a public repo, over https
 qbranch --add-skill git://<host>/<owner>/<repo>/<path>         # ...over SSH, which needs a key

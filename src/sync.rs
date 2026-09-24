@@ -16,6 +16,7 @@ use crate::rename;
 use crate::settings::sync_settings;
 use crate::skills::{
     collect_desired, collect_repo_skills, prepare_skill_repos, unlinked_repo_skill_dirs,
+    update_checkouts,
 };
 use crate::state::{
     choose_manifest, load_state, previous_copies, previous_links, resolve_root, save_state,
@@ -34,6 +35,7 @@ pub struct SyncArgs {
     pub manifest: Option<String>,
     pub skills_target: PathBuf,
     pub dry_run: bool,
+    pub update: bool,
     pub json: bool,
     pub root: Option<String>,
     pub link_mode: Option<String>,
@@ -373,6 +375,11 @@ pub fn run(ctx: &mut Ctx, args: &SyncArgs) -> i32 {
         }
     }
 
+    if args.update {
+        for (level, text) in update_checkouts(ctx, &manifest) {
+            say.say(level, text);
+        }
+    }
     if !args.dry_run {
         prepare_skill_repos(ctx, &manifest);
     }
