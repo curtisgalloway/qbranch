@@ -1,6 +1,6 @@
 # Release train profile: qbranch
 
-Derived from commit 37d5a83 on 2026-09-26. Executed by the `release-train`
+Derived from commit 58edca9 on 2026-09-26. Executed by the `release-train`
 skill; kept honest by `profile_check.py` (see `## Sources`). Lines marked
 `UNVERIFIED` were inferred by the agent that wrote this file and have not been
 confirmed by a maintainer or by a passing arm.
@@ -117,10 +117,15 @@ against the release workflow when present.
   the four embedded ones.
 - cleanup: remove the install root.
 - caveats: none outstanding. The crate was first published by hand at 0.4.0 on 2026-09-20 —
-  only an existing crate can declare a trusted publisher — and `CRATES_PUBLISH` is now `true`,
-  so the `crates` job publishes each non-prerelease tag over OIDC with no stored token.
-  Verified: `cargo install --locked qbranch` into a throwaway root yields 0.4.0 with all three
-  skills (four from 0.5.0). A release that bumps the version without the crate job running would leave the
+  only an existing crate can declare a trusted publisher — and `CRATES_PUBLISH` is `true`, so
+  the `crates` job publishes each non-prerelease tag over OIDC with no stored token. That job
+  needs a Trusted Publishing entry in the crate's settings on crates.io: GitHub, repository
+  `curtisgalloway/qbranch`, workflow `release.yml` (not `.yaml`), no environment. The entry
+  was missing until 0.5.0, whose `crates` job failed with "No Trusted Publishing config found"
+  and then, after a misspelled first try, "does not match the workflow filename"; it was added
+  on 2026-09-26 and the job re-run with `gh run rerun <id> --failed`.
+  Verified: `cargo install --locked qbranch` into a throwaway root yields 0.5.0 with all four
+  skills. A release that bumps the version without the crate job running would leave the
   registry behind the other channels; the re-verify below is what notices.
 
 ### archive
@@ -299,4 +304,4 @@ rewrites the ids once that is done.
 | `src/ctx.rs` | 653170dd181e | Project: version source |
 | `bin/qbranch` | ccfbc890a8ab | Project: version source, Smoke contract |
 | `README.md` | 9a6a94ab485c | Channels: install like a user |
-| `AGENTS.md` | e4d3695608f4 | Project: bump rules, Publish |
+| `AGENTS.md` | c18062353fc5 | Project: bump rules, Publish |
