@@ -427,6 +427,18 @@ class RegressionTest(unittest.TestCase):
         self.assertIn("one", [a["label"] for a in plan["actions"]])
         self.assertIn("treating bad-mkt as a plain skill repo", result.stderr)
 
+    def test_migration_clears_a_legacy_state_file(self) -> None:
+        # d2f121a: .agent-skills-state.json was missing from the junk list, so
+        # claiming a skills directory from the oldest layout always refused.
+        self.write_manifest()
+        claude_skills = self.home / ".claude" / "skills"
+        claude_skills.mkdir(parents=True)
+        (claude_skills / ".agent-skills-state.json").write_text('{"links": []}\n')
+        result = self.run_tool()
+        self.assert_ok(result)
+        self.assertFalse((claude_skills / ".agent-skills-state.json").exists())
+        self.assert_converged()
+
 
 class ExportZipsTest(unittest.TestCase):
     """--export-zips: what goes in a zip, and new / changed / current / dropped."""
