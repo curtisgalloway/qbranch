@@ -150,7 +150,8 @@ qbranch --manage-plugin ID --in base|host [--value false]   declare a plugin in 
 qbranch --audit [--json]         collisions, double loads, duplicate MCP servers, context budget
 qbranch --export-zips DIR [--json]   a zip per skill for upload to the Claude apps; see below
 qbranch --upgrade-manifests      rewrite older manifests at the current schema
-qbranch --skill [NAME]           this skill and its siblings, review-plugins and agent-audit
+qbranch --skill [NAME]           this skill and its siblings: review-plugins, agent-audit,
+                                 claude-apps-sync
 ```
 
 Every editing command changes the config root only. Run `qbranch` afterwards to apply, and
@@ -224,4 +225,6 @@ those keep referring to it by name, and nothing else will tell you they have gon
 
 `qbranch --skill review-plugins` decides the fate of plugins installed here but declared
 nowhere, one structured question each. `qbranch --skill agent-audit` walks an audit's
-findings the same way. Both assume the setup this skill describes.
+findings the same way. `qbranch --skill claude-apps-sync` uploads a manifest's skills to the
+Claude apps through their Settings page in Chrome, using `--export-zips` (see above). All three
+assume the setup this skill describes.
