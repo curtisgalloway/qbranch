@@ -440,6 +440,22 @@ class RegressionTest(unittest.TestCase):
         self.assert_converged()
 
 
+class MissStaleLinkTest(unittest.TestCase):
+    """c3f5aef: a missing source's dangling link is cleared, not kept forever."""
+
+    def test_apply_removes_the_dangling_link(self) -> None:
+        sb = run_corpus.Sandbox("miss-stale-link")
+        try:
+            link = sb.home / ".agents" / "skills" / "alpha"
+            self.assertTrue(link.is_symlink())
+            result = sb.run(TOOL, [])
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertIn("removed stale link", result.stderr)
+            self.assertFalse(link.is_symlink())
+        finally:
+            sb.close()
+
+
 class ExportZipsTest(unittest.TestCase):
     """--export-zips: what goes in a zip, and new / changed / current / dropped."""
 

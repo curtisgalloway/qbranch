@@ -1,0 +1,12 @@
+{
+  "schema": 2,
+  "name": "misslink",
+  "description": "corpus case miss-stale-link: a missing source whose destination is a dangling link",
+  "skill_repos": [],
+  "skills": [
+    { "name": "alpha", "path": "${QBRANCH_ROOT}/skills/alpha" }
+  ],
+  "links": [],
+  "claude_settings": [],
+  "agy_settings": []
+}
