@@ -33,6 +33,7 @@ for qbranch: everything the generic skill needs to know about this project.
   implementation, a new manifest key, a new CLI flag or a manifest schema bump is **minor**
   while the project is pre-1.0; corpus, test, packaging and documentation-only commits are
   **patch**; a commit that only re-blesses `expected.json` for a version bump is **none**.
+- log dir: `.release-train/<run>/` at the repo root, gitignored; one `<arm>.log` and `<arm>.json` per arm, plus `archaeology.log` and `archaeology.json`
 - releaser identity: the tag author matches the repo's existing commits, which all use the
   maintainer's GitHub noreply address; take it from `git log -1 --format=%ae` on `main` rather
   than from any configured global identity. This machine has no `user.email` set, so git
