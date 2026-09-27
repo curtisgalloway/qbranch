@@ -408,6 +408,25 @@ class RegressionTest(unittest.TestCase):
         self.assertIn(f"git clone {repo_url} failed", result.stderr)
         self.assertNotIn("Traceback", result.stderr)
 
+    def test_unparseable_marketplace_warning_keeps_json_plan_clean(self) -> None:
+        # 1b8f4ed: the reference printed this warning to stdout, ahead of the
+        # --dry-run --json plan. A regression and not a corpus case, because
+        # the warning embeds each JSON parser's own error text.
+        repo = self.home / "src" / "bad-mkt"
+        (repo / ".claude-plugin").mkdir(parents=True)
+        (repo / ".claude-plugin" / "marketplace.json").write_text("{\n")
+        (repo / "skills" / "one").mkdir(parents=True)
+        (repo / "skills" / "one" / "SKILL.md").write_text("one\n")
+        self.write_manifest(skills=[])
+        manifest = json.loads(self.manifest.read_text())
+        manifest["skill_repos"] = [{"path": "${HOME}/src/bad-mkt"}]
+        self.manifest.write_text(json.dumps(manifest, indent=2) + "\n")
+        result = self.run_tool("--dry-run", "--json")
+        self.assert_ok(result)
+        plan = json.loads(result.stdout)
+        self.assertIn("one", [a["label"] for a in plan["actions"]])
+        self.assertIn("treating bad-mkt as a plain skill repo", result.stderr)
+
 
 class ExportZipsTest(unittest.TestCase):
     """--export-zips: what goes in a zip, and new / changed / current / dropped."""
