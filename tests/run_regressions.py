@@ -398,6 +398,16 @@ class RegressionTest(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("cannot be combined with --dry-run", result.stderr)
 
+    def test_failed_clone_exits_with_a_message_not_a_traceback(self) -> None:
+        # ede44ab: the reference ran the clone with check=True, so a failing
+        # clone escaped as a CalledProcessError traceback.
+        repo_url = (Path(self.sb.dir) / "no-such-repo").as_uri()
+        self.write_manifest(repo=repo_url)
+        result = self.run_tool()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn(f"git clone {repo_url} failed", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
 
 class ExportZipsTest(unittest.TestCase):
     """--export-zips: what goes in a zip, and new / changed / current / dropped."""
