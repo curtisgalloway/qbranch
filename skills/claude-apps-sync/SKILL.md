@@ -18,6 +18,9 @@ the apps. Full definitions are in qbranch's `GLOSSARY.md`.
 
 ## Before the first sync
 
+- **A qbranch with `--export-zips`.** Releases up to 0.4.0 do not have it. Check with
+  `qbranch --help`; if the flag is missing, build qbranch from source (`cargo build
+  --release` in a checkout) and run that binary until a release carries it.
 - **Browser tools.** The session needs Claude in Chrome, with its file-upload tool, and
   Chrome signed in to claude.ai. This skill never signs in or types a password; if the
   page asks for a login, stop and ask the user to sign in themselves.
@@ -79,7 +82,11 @@ the apps. Full definitions are in qbranch's `GLOSSARY.md`.
    2. Find the file input with the find tool: it is labelled "Skill file" and accepts
       `.zip,.skill,.md`. **Never click it**, since that opens the operating system's file
       picker, which the browser tools cannot see. Put the zip into it with the file-upload
-      tool, using the absolute path of `~/.agents/claude-apps/<skill>.zip`.
+      tool, using an absolute path. The tool uploads only files the session is allowed to
+      share, and the export directory is usually not one of them (the refusal says "only
+      files this session is allowed to read can be uploaded"). Copy the zip into the
+      session's own temporary or scratch directory first and upload that copy; the bytes
+      are the same, so step 7 still records the original from the export directory.
    3. Check the **Preview** box: the name must be the skill's name. The apps name a skill
       from its `SKILL.md` frontmatter, not the folder, so a different name means the
       manifest entry and the frontmatter disagree; skip that skill and report it.

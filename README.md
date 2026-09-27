@@ -174,6 +174,38 @@ their Settings page in Chrome, driven by `--export-zips`. List this checkout as 
 lists them and `qbranch --skill qbranch` prints the guide verbatim, so an agent that finds
 qbranch on its PATH can read how to drive it before any manifest exists.
 
+## Using your skills in the Claude apps
+
+The Claude apps (claude.ai and the desktop app) cannot read skills from a folder on your
+computer: each skill goes in as an uploaded zip, under Settings → Skills. qbranch makes
+the zips and keeps track of which ones changed since you last uploaded them, so you only
+upload those.
+
+1. Install qbranch and write a manifest listing the skills you want in the apps (see
+   [The config root](#the-config-root)). If you also use Claude Code on the same account,
+   keep this list in its own manifest, say `manifests/claude-apps.json`: a skill uploaded
+   to the apps loads in Claude Code too, so listing it in both places loads it twice.
+2. Export:
+
+   ```bash
+   qbranch --export-zips ~/.agents/claude-apps --manifest claude-apps
+   ```
+
+   Every skill gets a zip, marked `new`, `changed` or `current`. Skills that have left the
+   manifest since the last upload are listed as dropped.
+3. In claude.ai, open Settings → Skills → **Add** → **Upload skill** and upload each `new`
+   or `changed` zip, one at a time. Uploading a skill the account already has asks to
+   replace it; the earlier version stays in that skill's version history. For a dropped
+   skill, use **Turn off** from its row menu rather than **Remove**, which deletes it and its
+   history.
+4. Copy each zip you uploaded into `~/.agents/claude-apps/uploaded/`. Those copies are how
+   the next export knows what the apps already hold; for a skill you turned off, delete its
+   copy instead.
+
+Run the export again whenever your skills change; only what changed comes back as `new` or
+`changed`. The bundled `claude-apps-sync` skill does steps 2 to 4 for you from an agent
+session that can drive Chrome.
+
 ## Tests
 
 ```bash
