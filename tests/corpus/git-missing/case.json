@@ -1,0 +1,6 @@
+{
+  "manifest": "nogit",
+  "mkdirs": ["home/src/testrepo/.git"],
+  "env": {"PATH": "<CASE>/bin"},
+  "apply_rc": 1
+}

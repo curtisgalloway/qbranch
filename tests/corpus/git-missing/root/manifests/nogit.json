@@ -1,0 +1,12 @@
+{
+  "schema": 2,
+  "name": "nogit",
+  "description": "corpus case git-missing: a skill source missing inside a work tree, with no git on PATH",
+  "skill_repos": [],
+  "skills": [
+    { "name": "gone", "path": "${HOME}/src/testrepo/skills/gone" }
+  ],
+  "links": [],
+  "claude_settings": [],
+  "agy_settings": []
+}
