@@ -1,0 +1,10 @@
+{
+  "schema": 2,
+  "name": "laptop",
+  "description": "corpus case add-skill-missing: --add-skill of a skill the config root does not have",
+  "skill_repos": [],
+  "skills": [],
+  "links": [],
+  "claude_settings": [],
+  "agy_settings": []
+}

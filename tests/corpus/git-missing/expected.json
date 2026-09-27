@@ -1,7 +1,7 @@
 {
   "tool": "0.5.0",
   "schema": 2,
-  "manifest": "repo",
+  "manifest": "nogit",
   "dry_run": true,
   "skills_target": "<CASE>/home/.agents/skills",
   "link_mode": "symlink",
@@ -11,9 +11,9 @@
   "actions": [
     {
       "op": "MISS",
-      "label": "remote",
-      "src": "<CASE>/home/.agents/skill-repos/upstream/skills/remote",
-      "dst": "<CASE>/home/.agents/skills/remote",
+      "label": "gone",
+      "src": "<CASE>/home/src/testrepo/skills/gone",
+      "dst": "<CASE>/home/.agents/skills/gone",
       "note": "source missing"
     }
   ],

@@ -1,0 +1,7 @@
+{
+  "manifest": "laptop",
+  "args": ["--add-skill", "ghost"],
+  "rc": 2,
+  "stderr_contains": "error: <CASE>/root/skills/ghost not found",
+  "apply": false
+}

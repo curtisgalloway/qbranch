@@ -1,6 +1,6 @@
 # Release train profile: qbranch
 
-Derived from commit dc82497 on 2026-09-19. Executed by the `release-train`
+Derived from commit 37d5a83 on 2026-09-26. Executed by the `release-train`
 skill; kept honest by `profile_check.py` (see `## Sources`). Lines marked
 `UNVERIFIED` were inferred by the agent that wrote this file and have not been
 confirmed by a maintainer or by a passing arm.
@@ -33,6 +33,7 @@ for qbranch: everything the generic skill needs to know about this project.
   implementation, a new manifest key, a new CLI flag or a manifest schema bump is **minor**
   while the project is pre-1.0; corpus, test, packaging and documentation-only commits are
   **patch**; a commit that only re-blesses `expected.json` for a version bump is **none**.
+- log dir: `.release-train/<run>/` at the repo root, gitignored; one `<arm>.log` and `<arm>.json` per arm, plus `archaeology.log` and `archaeology.json`
 - releaser identity: the tag author matches the repo's existing commits, which all use the
   maintainer's GitHub noreply address; take it from `git log -1 --format=%ae` on `main` rather
   than from any configured global identity. This machine has no `user.email` set, so git
@@ -45,15 +46,17 @@ live in `RELEASE-TRAIN.local.md` (gitignored), one section per role.
 
 | role | needed by | what it must have |
 |---|---|---|
-| local | source, archive, deb (degraded) | rust toolchain, python3, git, tar, dpkg-deb, gh — all present; the smoke contract runs here |
+| local | source, archive, deb (degraded) | rust toolchain, python3, git, tar, gh; `dpkg-deb` too for the degraded deb arm. The smoke contract runs here |
 | linux-container | deb | a container runtime (docker or podman) and a Debian-family image, to `apt install` the package without touching the developer's machine |
 | macos-bench | homebrew | macOS, Homebrew, the ability to `brew install` a local formula into a throwaway prefix |
 | windows-bench | msi, zip | Windows, `msiexec`, PowerShell reachable non-interactively |
 
-UNVERIFIED: the machine this profile was written on fills `local` only. It has no container
-runtime (`docker` and `podman` are both absent), no macOS and no Windows, and no `rustup`
-(the distro toolchain has no musl std installed). Until `RELEASE-TRAIN.local.md` names hosts
-for the other three roles, `homebrew`, `msi` and `zip` SKIP and `deb` runs degraded.
+The profile was first written on a Linux machine that filled `local` only. The 0.5.0 train ran
+from a macOS machine that fills `local` and `macos-bench` (Homebrew present) but has no
+container runtime, no `nfpm` and no `dpkg-deb`, and reaches no Windows host; there `deb`,
+`msi` and `zip` SKIP unless `RELEASE-TRAIN.local.md` names hosts for them. The release
+workflow installs the `.deb` and the MSI and checks their payload, so a waived `deb` or `msi`
+arm still has that coverage; nothing installs the Windows `.zip`.
 
 ## Smoke contract
 
@@ -77,11 +80,12 @@ $ROOT/skills/demo/SKILL.md
 
 | id | check | pass condition |
 |---|---|---|
-| S1 | `qbranch --help` and `qbranch --version` | exit 0; `--version` prints exactly the version being released; help lists `--dry-run`, `--list`, `--add-skill`, `--audit`, `--skill` |
+| S1 | `qbranch --help` and `qbranch --version` | exit 0; `--version` prints exactly the version being released; help lists `--dry-run`, `--list`, `--add-skill`, `--audit`, `--skill`, `--update`, `--export-zips` |
 | S2 | `qbranch --skill` then `qbranch --skill qbranch` | lists exactly `agent-audit`, `claude-apps-sync`, `qbranch`, `review-plugins`; printing one emits its `SKILL.md` verbatim. Where the channel also installs the skills as files, `qbranch --skill review-plugins` must `diff` clean against the installed copy — this is what catches a package that forgot a skill |
 | S3 | `qbranch --root $ROOT --manifest $MANIFEST --skills-target $HOME/.agents/skills` | exit 0; `$HOME/.agents/skills/demo` resolves to `$ROOT/skills/demo` (a symlink, or a copy under `--link-mode copy`) |
 | S4 | the same command again with `--dry-run` | exit 0; every action is `ok` — nothing left to do. Then `$HOME/.agents/skills/.qbranch-state.json` parses and records `manifest: smoke` (the value of `$MANIFEST`) and the root, which is the config/state round trip |
 | S5 | `qbranch --audit --json` and `qbranch --plugin-status --json` in that same `HOME` | exit 0 on the audit; both emit parseable JSON on stdout with no harness installed; neither panics nor prints a Rust backtrace. Both exit 0 with no harness installed (checked on `local`, 0.4.0); a panic is a FAIL whatever the exit code |
+| S6 | `qbranch --root $ROOT --manifest $MANIFEST --export-zips $HOME/apps --json`, then copy `$HOME/apps/demo.zip` to `$HOME/apps/uploaded/` and run it again | exit 0 both times; the first run reports `demo` as `new` and `$HOME/apps/demo.zip` holds `demo/SKILL.md`; the second reports it `current`. This is the upload-record round trip the Claude apps sync depends on |
 
 S5 is the hardware-free diagnostic: both report modes shell out to the `claude` CLI, which is
 absent on a throwaway `HOME`, and the point is that they degrade rather than crash.
@@ -109,14 +113,14 @@ against the release workflow when present.
   registry; `--path .` instead to test an unpublished candidate. `CARGO_INSTALL_ROOT` is
   required either way: without it cargo writes to `~/.cargo/bin` and replaces the developer's
   own copy.
-- smoke: S1..S5. A cargo install ships no skill files, so S2 checks only that `--skill` prints
-  the three embedded ones.
+- smoke: S1..S6. A cargo install ships no skill files, so S2 checks only that `--skill` prints
+  the four embedded ones.
 - cleanup: remove the install root.
 - caveats: none outstanding. The crate was first published by hand at 0.4.0 on 2026-09-20 —
   only an existing crate can declare a trusted publisher — and `CRATES_PUBLISH` is now `true`,
   so the `crates` job publishes each non-prerelease tag over OIDC with no stored token.
   Verified: `cargo install --locked qbranch` into a throwaway root yields 0.4.0 with all three
-  skills. A release that bumps the version without the crate job running would leave the
+  skills (four from 0.5.0). A release that bumps the version without the crate job running would leave the
   registry behind the other channels; the re-verify below is what notices.
 
 ### archive
@@ -130,13 +134,13 @@ against the release workflow when present.
   `dist/qbranch-v<X.Y.Z>-<target>/` and `tar -czf` it, exactly as the "Package the tarball"
   step does.
 - install like a user: extract into a temp dir and put that directory on `PATH`; nothing else.
-- smoke: S1..S5, plus: the archive expands to exactly one top-level directory; `skills/` beside
-  the executable holds all three `SKILL.md` files; S2's `diff` runs against `skills/` in the
+- smoke: S1..S6, plus: the archive expands to exactly one top-level directory; `skills/` beside
+  the executable holds all four `SKILL.md` files; S2's `diff` runs against `skills/` in the
   extracted tree.
 - cleanup: remove the staging and extraction directories.
 - caveats: the shipped Linux archives are built for `*-unknown-linux-musl` and are fully static.
-  UNVERIFIED: this host has no musl std installed and no `rustup` to add one, so the arm builds
-  the native `gnu` binary instead. What it tests — the payload shape and that the extracted
+  The arm builds the host's native binary (`gnu` on the Linux host that wrote this profile,
+  `aarch64-apple-darwin` on the macOS host that ran 0.5.0). What it tests — the payload shape and that the extracted
   binary finds its skills — is target-independent; that the shipped binary is static is not
   tested here, and `ldd` on the real artifact is the check that belongs on a host that can
   build it.
@@ -155,8 +159,8 @@ against the release workflow when present.
   `dpkg-deb -x <deb> <tmpdir>` and run from there, and report the arm PARTIAL: extraction
   exercises the payload but not the package metadata, the dependency resolution or the
   maintainer scripts.
-- smoke: S1..S5 against `/usr/bin/qbranch`, plus: `/usr/share/qbranch/skills/<name>/SKILL.md`
-  exists for all three, `/usr/share/doc/qbranch/LICENSE` exists, and `dpkg-deb -I` reports no
+- smoke: S1..S6 against `/usr/bin/qbranch`, plus: `/usr/share/qbranch/skills/<name>/SKILL.md`
+  exists for all four, `/usr/share/doc/qbranch/LICENSE` exists, and `dpkg-deb -I` reports no
   `Depends` — the binary is static and the package must stay dependency-free.
 - cleanup: remove the container, the staging directory and the built package.
 - caveats: the workflow builds `amd64` and `arm64` from the matching musl binaries. A local run
@@ -174,7 +178,7 @@ against the release workflow when present.
 - install like a user: `brew install curtisgalloway/tap/qbranch`. Against an unpublished
   candidate, install the formula from a local file with the URLs pointed at the staged tarballs,
   into a throwaway `HOMEBREW_PREFIX` or a temporary tap.
-- smoke: S1..S5, plus: `brew list qbranch` shows the three skills under the keg's own
+- smoke: S1..S6, plus: `brew list qbranch` shows the four skills under the keg's own
   `share/qbranch/skills`.
 - cleanup: `brew uninstall qbranch` and remove the temporary tap or prefix.
 - caveats: UNVERIFIED — no macOS host is reachable from the machine this profile was written on,
@@ -195,8 +199,8 @@ against the release workflow when present.
   `%LOCALAPPDATA%\Programs\qbranch`. Use a throwaway Windows user profile or a VM snapshot; the
   install puts `bin`
   on the user `PATH`.
-- smoke: S1..S5, plus: the executable lands under `%LOCALAPPDATA%\Programs\qbranch\bin`, the
-  three skills under `share\qbranch\skills`, and `PATH` picks it up in a fresh shell. Symbolic
+- smoke: S1..S6, plus: the executable lands under `%LOCALAPPDATA%\Programs\qbranch\bin`, the
+  four skills under `share\qbranch\skills`, and `PATH` picks it up in a fresh shell. Symbolic
   links need Developer Mode on Windows: with it off, S3 must fall back to copies and say so
   rather than fail, which is the platform behaviour worth proving here.
 - cleanup: `msiexec /x` the product, then remove the profile or restore the snapshot.
@@ -215,7 +219,7 @@ against the release workflow when present.
 - build: the same staged payload as the MSI, zipped: `qbranch.exe`, `LICENSE`, `README.md` and
   `skills/` under one top-level directory.
 - install like a user: expand the zip and put the directory on `PATH`.
-- smoke: S1..S5, plus the archive-shape checks from the `archive` arm.
+- smoke: S1..S6, plus the archive-shape checks from the `archive` arm.
 - cleanup: remove the expansion directory.
 - caveats: UNVERIFIED — no Windows host is reachable. This is the arm the release notes describe
   as "packaged from those builds without a separate installation check", so it is the channel
@@ -247,7 +251,7 @@ against the release workflow when present.
   - `cargo test`, `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`
 - prove-it-bites: `git checkout <fix>^ -- <fixed files>` then the test must fail; restore; it
   must pass. For a corpus case the revert must change `expected.json`'s plan, not merely the
-  exit code. Note that a bump commit re-blesses the `"tool"` line in all 30 expected plans; that
+  exit code. Note that a bump commit re-blesses the `"tool"` line in every expected plan that carries one (32 at 0.5.0); that
   is not a behaviour change and must not be mistaken for one.
 - both implementations: a regression test belongs wherever the defect was. A behaviour defect
   needs a corpus case, which runs against **both** the reference and the port; a defect in only
@@ -286,13 +290,13 @@ rewrites the ids once that is done.
 
 | path | blob | feeds |
 |---|---|---|
-| `.github/workflows/release.yml` | 99a505b5552d | Project, Channels, Publish |
+| `.github/workflows/release.yml` | dad3122101f3 | Project, Channels, Publish |
 | `.github/workflows/ci.yml` | 15fb5d69b6db | Project, Archaeology |
 | `packaging/nfpm.yaml` | b3cc2d76b54c | Channels: deb |
-| `packaging/windows/Package.wxs` | 7b578647fcca | Channels: msi |
-| `packaging/windows/build.ps1` | 6b95dacbd9fb | Channels: msi, zip |
-| `Cargo.toml` | d06391eeea74 | Project |
-| `src/ctx.rs` | ae1ee0e116b0 | Project: version source |
-| `bin/qbranch` | a598c1144672 | Project: version source, Smoke contract |
-| `README.md` | d2eb47a41d23 | Channels: install like a user |
+| `packaging/windows/Package.wxs` | db1ecfd3c675 | Channels: msi |
+| `packaging/windows/build.ps1` | 4c953461a0cd | Channels: msi, zip |
+| `Cargo.toml` | 2799ad1e4d0c | Project |
+| `src/ctx.rs` | 653170dd181e | Project: version source |
+| `bin/qbranch` | ccfbc890a8ab | Project: version source, Smoke contract |
+| `README.md` | 9a6a94ab485c | Channels: install like a user |
 | `AGENTS.md` | e4d3695608f4 | Project: bump rules, Publish |

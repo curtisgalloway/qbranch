@@ -398,6 +398,75 @@ class RegressionTest(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("cannot be combined with --dry-run", result.stderr)
 
+    def test_failed_clone_exits_with_a_message_not_a_traceback(self) -> None:
+        # ede44ab: the reference ran the clone with check=True, so a failing
+        # clone escaped as a CalledProcessError traceback.
+        repo_url = (Path(self.sb.dir) / "no-such-repo").as_uri()
+        self.write_manifest(repo=repo_url)
+        result = self.run_tool()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn(f"git clone {repo_url} failed", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_unparseable_marketplace_warning_keeps_json_plan_clean(self) -> None:
+        # 1b8f4ed: the reference printed this warning to stdout, ahead of the
+        # --dry-run --json plan. A regression and not a corpus case, because
+        # the warning embeds each JSON parser's own error text.
+        repo = self.home / "src" / "bad-mkt"
+        (repo / ".claude-plugin").mkdir(parents=True)
+        (repo / ".claude-plugin" / "marketplace.json").write_text("{\n")
+        (repo / "skills" / "one").mkdir(parents=True)
+        (repo / "skills" / "one" / "SKILL.md").write_text("one\n")
+        self.write_manifest(skills=[])
+        manifest = json.loads(self.manifest.read_text())
+        manifest["skill_repos"] = [{"path": "${HOME}/src/bad-mkt"}]
+        self.manifest.write_text(json.dumps(manifest, indent=2) + "\n")
+        result = self.run_tool("--dry-run", "--json")
+        self.assert_ok(result)
+        plan = json.loads(result.stdout)
+        self.assertIn("one", [a["label"] for a in plan["actions"]])
+        self.assertIn("treating bad-mkt as a plain skill repo", result.stderr)
+
+    def test_migration_clears_a_legacy_state_file(self) -> None:
+        # d2f121a: .agent-skills-state.json was missing from the junk list, so
+        # claiming a skills directory from the oldest layout always refused.
+        self.write_manifest()
+        claude_skills = self.home / ".claude" / "skills"
+        claude_skills.mkdir(parents=True)
+        (claude_skills / ".agent-skills-state.json").write_text('{"links": []}\n')
+        result = self.run_tool()
+        self.assert_ok(result)
+        self.assertFalse((claude_skills / ".agent-skills-state.json").exists())
+        self.assert_converged()
+
+    def test_non_symlink_at_destination_fails_the_sync(self) -> None:
+        # ab93da3: a WARN (someone's own directory where a link should go) was
+        # skipped with `pass`, so the sync exited 0 without the skill.
+        self.write_manifest()
+        mine = self.home / ".agents" / "skills" / "alpha"
+        mine.mkdir(parents=True)
+        (mine / "mine.txt").write_text("mine\n")
+        result = self.run_tool()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("alpha: non-symlink at", result.stderr)
+        self.assertEqual((mine / "mine.txt").read_text(), "mine\n")
+
+
+class MissStaleLinkTest(unittest.TestCase):
+    """c3f5aef: a missing source's dangling link is cleared, not kept forever."""
+
+    def test_apply_removes_the_dangling_link(self) -> None:
+        sb = run_corpus.Sandbox("miss-stale-link")
+        try:
+            link = sb.home / ".agents" / "skills" / "alpha"
+            self.assertTrue(link.is_symlink())
+            result = sb.run(TOOL, [])
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertIn("removed stale link", result.stderr)
+            self.assertFalse(link.is_symlink())
+        finally:
+            sb.close()
+
 
 class ExportZipsTest(unittest.TestCase):
     """--export-zips: what goes in a zip, and new / changed / current / dropped."""
