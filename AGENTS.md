@@ -63,11 +63,14 @@ HANDOFF.md             session handoff, untracked; read it first when it exists
 - **Links, never copies** above means qbranch never writes a file *of its own* into a home
   directory besides the state file. A copy made in copy mode is a copy of the source,
   recorded in the state file so it can be refreshed and removed.
-- **Known, deliberate differences.** The port sends its two stray warnings (a failed
-  `git pull`, an unparseable marketplace.json) to stderr, where the script prints them to
-  stdout, so a `--dry-run --json` plan on stdout stays parseable. Its `--help` is clap's
-  layout, not argparse's. Everything else, including JSON escaping and the text output of
-  every mode, is byte for byte the same; `tests/run_parity.py` is the check.
+- **Known, deliberate differences.** The port's `--help` is clap's layout, not argparse's.
+  The unparseable-marketplace.json warning quotes the JSON parser's own error, and Python's
+  `json` and `serde_json` word it differently, so that one warning's text differs; it is
+  pinned by a regression test rather than a corpus case for that reason. Both
+  implementations send their two stray warnings (a failed `git pull`, an unparseable
+  marketplace.json) to stderr, so a `--dry-run --json` plan on stdout stays parseable.
+  Everything else, including JSON escaping and the text output of every mode, is byte for
+  byte the same; `tests/run_parity.py` is the check.
 - **Manifest compatibility is forward-only.** Bumping the schema means adding a migration in
   `migrate_manifest` that materializes the old implicit behaviour, so an upgraded manifest does
   exactly what it did before. A manifest newer than the tool is refused. Never write a

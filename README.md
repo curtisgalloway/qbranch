@@ -43,7 +43,9 @@ Every step is planned first; `--dry-run` shows the plan and changes nothing.
 
 ## Installing
 
-**macOS**, with Homebrew. The tap carries prebuilt binaries for Apple Silicon and Intel:
+**macOS and Linux**, with Homebrew. The tap carries prebuilt binaries for Apple Silicon and
+Intel Macs, and static ones for x86_64 and arm64 Linux, so it works on any distribution
+that runs Homebrew:
 
 ```bash
 brew install curtisgalloway/tap/qbranch
