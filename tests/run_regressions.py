@@ -439,6 +439,18 @@ class RegressionTest(unittest.TestCase):
         self.assertFalse((claude_skills / ".agent-skills-state.json").exists())
         self.assert_converged()
 
+    def test_non_symlink_at_destination_fails_the_sync(self) -> None:
+        # ab93da3: a WARN (someone's own directory where a link should go) was
+        # skipped with `pass`, so the sync exited 0 without the skill.
+        self.write_manifest()
+        mine = self.home / ".agents" / "skills" / "alpha"
+        mine.mkdir(parents=True)
+        (mine / "mine.txt").write_text("mine\n")
+        result = self.run_tool()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("alpha: non-symlink at", result.stderr)
+        self.assertEqual((mine / "mine.txt").read_text(), "mine\n")
+
 
 class MissStaleLinkTest(unittest.TestCase):
     """c3f5aef: a missing source's dangling link is cleared, not kept forever."""
