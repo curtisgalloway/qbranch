@@ -251,7 +251,7 @@ against the release workflow when present.
   - `cargo test`, `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`
 - prove-it-bites: `git checkout <fix>^ -- <fixed files>` then the test must fail; restore; it
   must pass. For a corpus case the revert must change `expected.json`'s plan, not merely the
-  exit code. Note that a bump commit re-blesses the `"tool"` line in all 30 expected plans; that
+  exit code. Note that a bump commit re-blesses the `"tool"` line in every expected plan that carries one (32 at 0.5.0); that
   is not a behaviour change and must not be mistaken for one.
 - both implementations: a regression test belongs wherever the defect was. A behaviour defect
   needs a corpus case, which runs against **both** the reference and the port; a defect in only
