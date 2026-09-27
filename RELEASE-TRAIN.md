@@ -1,6 +1,6 @@
 # Release train profile: qbranch
 
-Derived from commit 58edca9 on 2026-09-26. Executed by the `release-train`
+Derived from commit 0e1fe7b on 2026-09-26. Executed by the `release-train`
 skill; kept honest by `profile_check.py` (see `## Sources`). Lines marked
 `UNVERIFIED` were inferred by the agent that wrote this file and have not been
 confirmed by a maintainer or by a passing arm.
@@ -174,20 +174,23 @@ against the release workflow when present.
 ### homebrew
 
 - kind: homebrew
-- artifact: the macOS tarballs, consumed by `Formula/qbranch.rb` in `curtisgalloway/homebrew-tap`
+- artifact: the macOS tarballs and the two Linux musl tarballs, consumed by
+  `Formula/qbranch.rb` in `curtisgalloway/homebrew-tap` (`on_macos` and `on_linux` blocks)
 - workflow job: tap
 - host: macos-bench
 - build: none of its own — the formula points at the tarballs the `build` job produced, one URL
   and sha256 per architecture. The tap's own `bump-qbranch-formula.yml` rewrites the version
-  line and both pairs on a `qbranch-release` dispatch.
+  line and all four url/sha256 pairs on a `qbranch-release` dispatch.
 - install like a user: `brew install curtisgalloway/tap/qbranch`. Against an unpublished
   candidate, install the formula from a local file with the URLs pointed at the staged tarballs,
   into a throwaway `HOMEBREW_PREFIX` or a temporary tap.
 - smoke: S1..S6, plus: `brew list qbranch` shows the four skills under the keg's own
   `share/qbranch/skills`.
 - cleanup: `brew uninstall qbranch` and remove the temporary tap or prefix.
-- caveats: UNVERIFIED — no macOS host is reachable from the machine this profile was written on,
-  so this arm has never run. The dispatch needs `HOMEBREW_TAP_DISPATCH_TOKEN` in this repo;
+- caveats: from an agent session, `brew install` stops at Homebrew's own sandbox check
+  ("Inherited sandbox permits writes"), so the 0.5.0 arm ran PARTIAL against the formula's
+  layout and the install itself is checked from a normal terminal. The Linux side (added after
+  0.5.0) is UNVERIFIED: no Linux host with Homebrew has installed it yet. The dispatch needs `HOMEBREW_TAP_DISPATCH_TOKEN` in this repo;
   without it the release warns and the tap's workflow is run by hand, so a green release does
   not by itself mean the tap moved.
 
@@ -303,5 +306,5 @@ rewrites the ids once that is done.
 | `Cargo.toml` | 2799ad1e4d0c | Project |
 | `src/ctx.rs` | 653170dd181e | Project: version source |
 | `bin/qbranch` | ccfbc890a8ab | Project: version source, Smoke contract |
-| `README.md` | 9a6a94ab485c | Channels: install like a user |
+| `README.md` | 191e468a6cee | Channels: install like a user |
 | `AGENTS.md` | c18062353fc5 | Project: bump rules, Publish |
