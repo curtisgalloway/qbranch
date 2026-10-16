@@ -1,6 +1,6 @@
 # Release train profile: qbranch
 
-Derived from commit 0e1fe7b on 2026-09-26. Executed by the `release-train`
+Derived from commit ccca6dd on 2026-10-16. Executed by the `release-train`
 skill; kept honest by `profile_check.py` (see `## Sources`). Lines marked
 `UNVERIFIED` were inferred by the agent that wrote this file and have not been
 confirmed by a maintainer or by a passing arm.
@@ -84,16 +84,16 @@ $ROOT/skills/demo/SKILL.md
 | S2 | `qbranch --skill` then `qbranch --skill qbranch` | lists exactly `agent-audit`, `claude-apps-sync`, `qbranch`, `review-plugins`; printing one emits its `SKILL.md` verbatim. Where the channel also installs the skills as files, `qbranch --skill review-plugins` must `diff` clean against the installed copy — this is what catches a package that forgot a skill |
 | S3 | `qbranch --root $ROOT --manifest $MANIFEST --skills-target $HOME/.agents/skills` | exit 0; `$HOME/.agents/skills/demo` resolves to `$ROOT/skills/demo` (a symlink, or a copy under `--link-mode copy`) |
 | S4 | the same command again with `--dry-run` | exit 0; every action is `ok` — nothing left to do. Then `$HOME/.agents/skills/.qbranch-state.json` parses and records `manifest: smoke` (the value of `$MANIFEST`) and the root, which is the config/state round trip |
-| S5 | `qbranch --audit --json` and `qbranch --plugin-status --json` in that same `HOME` | exit 0 on the audit; both emit parseable JSON on stdout with no harness installed; neither panics nor prints a Rust backtrace. Both exit 0 with no harness installed (checked on `local`, 0.4.0); a panic is a FAIL whatever the exit code |
+| S5 | `qbranch --audit --json` and `qbranch --plugin-status --json` in that same `HOME` | exit 0 on the audit; both emit parseable JSON on stdout with no harness installed; neither panics nor prints a Rust backtrace. Plugin status exits 1 with `claude not on PATH — cannot read installed plugins` when the CLI is absent; a panic or a different failure is a FAIL |
 | S6 | `qbranch --root $ROOT --manifest $MANIFEST --export-zips $HOME/apps --json`, then copy `$HOME/apps/demo.zip` to `$HOME/apps/uploaded/` and run it again | exit 0 both times; the first run reports `demo` as `new` and `$HOME/apps/demo.zip` holds `demo/SKILL.md`; the second reports it `current`. This is the upload-record round trip the Claude apps sync depends on |
 
 S5 is the hardware-free diagnostic: both report modes shell out to the `claude` CLI, which is
 absent on a throwaway `HOME`, and the point is that they degrade rather than crash.
 
-Verified: this contract was executed by hand against a 0.4.0 release build on the `local` host
-on 2026-09-19 — S1 to S5 all green, both report modes exiting 0 with parseable JSON and no
-panic. So the contract is known to be runnable; what stays UNVERIFIED is whether each channel's
-*installed* copy passes it.
+The 0.6.0 source-install check corrected an earlier claim that both report modes exit 0
+without Claude Code. Plugin status deliberately returns 1 with a missing-CLI diagnostic;
+this is also present in the 0.5.0 source. The smoke contract checks that expected degradation
+alongside parseable JSON and no panic.
 
 ## Channels
 
@@ -235,10 +235,9 @@ against the release workflow when present.
 
 ## Archaeology
 
-- issue source: `gh issue list --state closed --limit 200`. **The repo has no issues at all,
-  open or closed** — every fix so far arrived as a pull request, so the PR list is the tracker:
-  `gh pr list --state merged --limit 200`. Join a fix to its tests through the PR body and the
-  merge commit, not through `#N` in prose.
+- issue source: `gh issue list --state closed --limit 200` and
+  `gh pr list --state merged --limit 200`. Join a fix to its tests through closing references
+  and the merge commit, not through incidental `#N` mentions in prose.
 - fix commits: `git log --format='%H %s%n%b'` piped through
   `grep -iE 'fix|refuse|regression|leak|clobber|wrong'`, over subjects and bodies. The repo
   writes sentence subjects, so there is no `fix:` prefix to match; several commits fix something
@@ -303,8 +302,8 @@ rewrites the ids once that is done.
 | `packaging/nfpm.yaml` | b3cc2d76b54c | Channels: deb |
 | `packaging/windows/Package.wxs` | db1ecfd3c675 | Channels: msi |
 | `packaging/windows/build.ps1` | 4c953461a0cd | Channels: msi, zip |
-| `Cargo.toml` | 2799ad1e4d0c | Project |
-| `src/ctx.rs` | 653170dd181e | Project: version source |
-| `bin/qbranch` | ccfbc890a8ab | Project: version source, Smoke contract |
+| `Cargo.toml` | c7662cce3672 | Project |
+| `src/ctx.rs` | 9466b5d5b3e6 | Project: version source |
+| `bin/qbranch` | 4fc4f5763c27 | Project: version source, Smoke contract |
 | `README.md` | 191e468a6cee | Channels: install like a user |
 | `AGENTS.md` | c18062353fc5 | Project: bump rules, Publish |
