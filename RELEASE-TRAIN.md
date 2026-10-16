@@ -1,6 +1,6 @@
 # Release train profile: qbranch
 
-Derived from commit bf0352e on 2026-10-16. Executed by the `release-train`
+Derived from commit fd34d52 on 2026-10-16. Executed by the `release-train`
 skill; kept honest by `profile_check.py` (see `## Sources`). Lines marked
 `UNVERIFIED` were inferred by the agent that wrote this file and have not been
 confirmed by a maintainer or by a passing arm.
@@ -302,7 +302,7 @@ rewrites the ids once that is done.
 | path | blob | feeds |
 |---|---|---|
 | `.github/workflows/release.yml` | 61f21f77c083 | Project, Channels, Publish |
-| `tests/smoke_installed.py` | c48c5d2b33cd | Smoke contract, Channels |
+| `tests/smoke_installed.py` | 59e17f749fb3 | Smoke contract, Channels |
 | `.github/workflows/ci.yml` | 15fb5d69b6db | Project, Archaeology |
 | `packaging/nfpm.yaml` | b3cc2d76b54c | Channels: deb |
 | `packaging/windows/Package.wxs` | db1ecfd3c675 | Channels: msi |

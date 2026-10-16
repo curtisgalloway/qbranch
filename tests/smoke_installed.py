@@ -139,7 +139,7 @@ def smoke(binary: Path, version: str, skills: Path | None) -> None:
         assert first["skills"][0]["name"] == "demo"
         assert first["skills"][0]["status"] == "new"
         with zipfile.ZipFile(exports / "demo.zip") as archive:
-            assert archive.read("demo/SKILL.md") == b"demo skill\n"
+            assert archive.read("demo/SKILL.md") == (source / "SKILL.md").read_bytes()
         (exports / "uploaded").mkdir()
         shutil.copyfile(exports / "demo.zip", exports / "uploaded" / "demo.zip")
         assert json.loads(run(*export_args))["skills"][0]["status"] == "current"
