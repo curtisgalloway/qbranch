@@ -1,0 +1,11 @@
+{
+  "schema": 2,
+  "name": "marketplace",
+  "skills": [],
+  "skill_repos": [],
+  "links": [],
+  "claude_settings": [
+    "${QBRANCH_ROOT}/claude-code/settings.json"
+  ],
+  "agy_settings": []
+}

@@ -12,12 +12,15 @@ State file: $QBRANCH_FAKE_CLAUDE_STATE (JSON), shape:
    "plugins":      [ {"id", "scope", "enabled", "version", "installPath",
                       "mcpServers": {...}} ... ],
    "details":      { "<id>": <always-on token count> } }
+Optional rewrite_marketplaces maps add arguments to marketplace names; those
+adds overwrite the live settings entry, as the real CLI does.
 Every call is appended, one JSON array per line, to
 $QBRANCH_FAKE_CLAUDE_LOG when that is set.
 """
 import json
 import os
 import sys
+from pathlib import Path
 
 argv = sys.argv[1:]
 state_path = os.environ.get("QBRANCH_FAKE_CLAUDE_STATE")
@@ -42,5 +45,20 @@ elif argv[:2] == ["plugin", "details"] and len(argv) >= 3:
     print(f"{argv[2]}\n\nProjected token cost\n  Always-on:   ~{tokens} tok   added to every session")
 elif argv[:1] == ["--version"]:
     print("0.0.0 (fake claude for the qbranch corpus)")
+elif (
+    argv[:3] == ["plugin", "marketplace", "add"]
+    and len(argv) >= 4
+    and argv[3] in state.get("rewrite_marketplaces", {})
+):
+    target = Path(os.environ["CLAUDE_CONFIG_DIR"]) / "settings.json"
+    live = json.loads(target.read_text(encoding="utf-8"))
+    name = state["rewrite_marketplaces"][argv[3]]
+    live.setdefault("extraKnownMarketplaces", {})[name] = {
+        "source": {"source": "github", "repo": argv[3]},
+        "installLocation": "app-owned",
+    }
+    live["appOwned"] = "keep"
+    target.write_text(json.dumps(live) + "\n", encoding="utf-8")
+    print(f"fake claude: recorded {' '.join(argv)}")
 else:
     print(f"fake claude: recorded {' '.join(argv)}")

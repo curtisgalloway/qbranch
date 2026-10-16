@@ -1,0 +1,15 @@
+{
+  "extraKnownMarketplaces": {
+    "example": {
+      "source": {
+        "source": "github",
+        "repo": "example/repo"
+      },
+      "autoUpdate": true,
+      "customField": "preserved"
+    }
+  },
+  "enabledPlugins": {
+    "plugin@example": true
+  }
+}

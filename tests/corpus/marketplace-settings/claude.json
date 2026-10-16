@@ -1,0 +1,7 @@
+{
+  "marketplaces": [],
+  "plugins": [],
+  "rewrite_marketplaces": {
+    "example/repo": "example"
+  }
+}

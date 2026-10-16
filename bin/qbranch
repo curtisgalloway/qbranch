@@ -2918,6 +2918,26 @@ def sync(args: argparse.Namespace, skills_target: Path, state_path: Path) -> int
         else:
             print(" done")
 
+    # Plugin commands can rewrite app-owned settings, dropping policy fields.
+    # Merge again from disk, even after a failed command that may have written.
+    if plugin_actions:
+        notes, policy, fails = sync_settings(
+            "Claude Code",
+            "claude_settings",
+            CLAUDE_SETTINGS_FILE,
+            "claude_settings_applied",
+            manifest,
+            state,
+            False,
+        )
+        applied_policy["claude_settings_applied"] = policy
+        for note in notes:
+            say("info", note)
+        for msg in fails:
+            print(f"ERROR: {msg}", file=sys.stderr)
+            failures.append(msg)
+            had_error = True
+
     for _, _, _, skey, _ in settings_agents:
         if applied_policy.get(skey) is None:
             # Settings failed or the agent is absent: keep the previous

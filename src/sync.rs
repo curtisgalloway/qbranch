@@ -773,6 +773,28 @@ pub fn run(ctx: &mut Ctx, args: &SyncArgs) -> i32 {
         }
     }
 
+    // Plugin commands can rewrite app-owned settings, dropping policy fields.
+    // Merge again from disk, even after a failed command that may have written.
+    if !plugin_actions.is_empty() {
+        let o = sync_settings(
+            ctx,
+            "Claude Code",
+            "claude_settings",
+            &ctx.claude_settings_file,
+            "claude_settings_applied",
+            &manifest,
+            &state,
+            false,
+        );
+        applied_policy.insert("claude_settings_applied".to_string(), o.applied);
+        for note in o.notes {
+            say.say("info", note);
+        }
+        for msg in o.failures {
+            fail(msg, &mut failures, &mut had_error);
+        }
+    }
+
     for a in &agents {
         let entry = applied_policy
             .entry(a.state_key.to_string())
