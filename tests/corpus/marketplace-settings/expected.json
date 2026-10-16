@@ -1,0 +1,53 @@
+{
+  "tool": "0.5.0",
+  "schema": 2,
+  "manifest": "marketplace",
+  "dry_run": true,
+  "skills_target": "<CASE>/home/.agents/skills",
+  "link_mode": "symlink",
+  "claude": true,
+  "agy": false,
+  "desired": 1,
+  "actions": [
+    {
+      "op": "link",
+      "label": "claude-skills",
+      "src": "<CASE>/home/.agents/skills",
+      "dst": "<CASE>/home/.claude/skills",
+      "note": ""
+    }
+  ],
+  "plugin_actions": [
+    {
+      "op": "add-mkt",
+      "label": "example",
+      "argv": [
+        "claude",
+        "plugin",
+        "marketplace",
+        "add",
+        "example/repo"
+      ]
+    },
+    {
+      "op": "install",
+      "label": "plugin@example",
+      "argv": [
+        "claude",
+        "plugin",
+        "install",
+        "plugin@example",
+        "--scope",
+        "user"
+      ]
+    }
+  ],
+  "unlinked_repo_skills": [],
+  "messages": [
+    {
+      "level": "info",
+      "text": "Claude Code settings: would update <CASE>/home/.claude/settings.json from 1 fragment(s)"
+    }
+  ],
+  "failures": []
+}

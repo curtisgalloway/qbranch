@@ -70,6 +70,21 @@ class RegressionTest(unittest.TestCase):
         self.assertFalse(plan.get("failures"), plan)
         self.assertFalse([a for a in plan["actions"] if a["op"] != "ok"], plan)
 
+    def test_marketplace_add_preserves_settings_in_one_sync(self) -> None:
+        sb = run_corpus.Sandbox("marketplace-settings")
+        self.addCleanup(sb.close)
+        result = sb.run(TOOL, [])
+        self.assert_ok(result)
+        live = json.loads((sb.home / ".claude/settings.json").read_text())
+        entry = live["extraKnownMarketplaces"]["example"]
+        self.assertIs(entry["autoUpdate"], True)
+        self.assertEqual(entry["customField"], "preserved")
+        self.assertEqual(entry["installLocation"], "app-owned")
+        self.assertEqual(live["appOwned"], "keep")
+        plan, rc, err = sb.plan(TOOL)
+        self.assertEqual(rc, 0, err)
+        self.assertFalse(any("would update" in m["text"] for m in plan["messages"]))
+
     def test_copy_mode_skill_changes_reach_both_harnesses_in_one_apply(self) -> None:
         self.set_copy_mode()
         self.write_manifest()
