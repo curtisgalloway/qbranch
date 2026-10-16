@@ -123,6 +123,10 @@ jobs:
           tar -C dist -czf "dist/$name.tar.gz" "$name"
           rm -r "dist/$name"
 
+      - name: Exercise the extracted archive
+        if: matrix.test
+        run: python tests/smoke_installed.py --archive "dist/qbranch-v${VERSION}-${TARGET}.tar.gz"
+
       - name: Install nfpm
         if: matrix.deb
         run: |
@@ -165,6 +169,8 @@ jobs:
           mkdir -p "$scratch/root/manifests"
           echo '{"schema": 2, "name": "smoke"}' > "$scratch/root/manifests/smoke.json"
           ( cd "$scratch" && /usr/bin/qbranch --root "$scratch/root" --manifest smoke --dry-run )
+          python tests/smoke_installed.py --binary /usr/bin/qbranch --skills /usr/share/qbranch/skills
+          test -z "$(dpkg-deb -f ./dist/qbranch_*.deb Depends)"
           sudo apt-get remove -y qbranch
           test ! -e /usr/bin/qbranch
 
@@ -348,6 +354,10 @@ jobs:
           & "$prefix\bin\qbranch.exe" --root "$scratch\root" --manifest smoke --dry-run
           if ($LASTEXITCODE -ne 0) { throw "qbranch dry run failed: $LASTEXITCODE" }
 
+          python "$env:GITHUB_WORKSPACE\tests\smoke_installed.py" `
+            --binary "$prefix\bin\qbranch.exe" --skills "$prefix\share\qbranch\skills"
+          if ($LASTEXITCODE -ne 0) { throw "installed MSI smoke contract failed" }
+
           Write-Host "== uninstalling"
           $p = Start-Process msiexec -Wait -PassThru -ArgumentList '/x', "`"$env:MSI_PATH`"", '/qn'
           if ($p.ExitCode -ne 0) { throw "msiexec uninstall failed: $($p.ExitCode)" }
@@ -369,6 +379,13 @@ jobs:
           Copy-Item -Recurse skills "$stage\skills"
           Compress-Archive -Path $stage -DestinationPath "dist\$name.zip"
           Remove-Item -Recurse -Force $stage
+
+      - name: Exercise the extracted Windows zip
+        shell: pwsh
+        run: |
+          $archive = Get-ChildItem dist/*.zip | Select-Object -First 1
+          python tests/smoke_installed.py --archive $archive.FullName
+          if ($LASTEXITCODE -ne 0) { throw "extracted zip smoke contract failed" }
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -444,8 +461,8 @@ jobs:
 
             The corpus passed against the native builds; Intel macOS was
             cross-built without a corpus run. The .deb and MSI were installed
-            and exercised in their build jobs. Archives were packaged from
-            those builds without a separate installation check.
+            and exercised in their build jobs. Native archives and the Windows
+            zip passed the full smoke contract after extraction.
 
   tap:
     name: bump the Homebrew tap

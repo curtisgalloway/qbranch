@@ -1,6 +1,6 @@
 # Release train profile: qbranch
 
-Derived from commit ccca6dd on 2026-10-16. Executed by the `release-train`
+Derived from commit bf0352e on 2026-10-16. Executed by the `release-train`
 skill; kept honest by `profile_check.py` (see `## Sources`). Lines marked
 `UNVERIFIED` were inferred by the agent that wrote this file and have not been
 confirmed by a maintainer or by a passing arm.
@@ -51,17 +51,21 @@ live in `RELEASE-TRAIN.local.md` (gitignored), one section per role.
 | macos-bench | homebrew | macOS, Homebrew, the ability to `brew install` a local formula into a throwaway prefix |
 | windows-bench | msi, zip | Windows, `msiexec`, PowerShell reachable non-interactively |
 
-The profile was first written on a Linux machine that filled `local` only. The 0.5.0 train ran
-from a macOS machine that fills `local` and `macos-bench` (Homebrew present) but has no
-container runtime, no `nfpm` and no `dpkg-deb`, and reaches no Windows host; there `deb`,
-`msi` and `zip` SKIP unless `RELEASE-TRAIN.local.md` names hosts for them. The release
-workflow installs the `.deb` and the MSI and checks their payload, so a waived `deb` or `msi`
-arm still has that coverage; nothing installs the Windows `.zip`.
+When local Linux or Windows hosts are unavailable, the disposable GitHub-hosted runners
+in `release.yml` can fill those roles. Run `workflow_dispatch` on the release branch before
+tagging: it builds the packages, installs and uninstalls the `.deb` and MSI, and executes the
+full smoke contract against those installs and extracted native archives and the Windows
+zip. Keep that run's logs with the arm reports; a successful build alone is not a passing arm.
 
 ## Smoke contract
 
 Run against the installed copy, with `HOME` (or the platform equivalent)
 pointed at a fresh temp dir and the working directory outside the checkout.
+
+`tests/smoke_installed.py` executes S1 to S6 with an isolated home directory and no
+harnesses on PATH. The release workflow runs it against installed Linux packages and the
+Windows MSI, plus extracted native archives and the Windows zip; a manual workflow run
+provides this coverage before a tag is published.
 
 Steps S3 to S5 need a config root. Build the smallest one that exercises a sync, in the temp
 `HOME`, before S3, with `MANIFEST=smoke`. qbranch takes no subcommands — every row below is
@@ -212,7 +216,8 @@ against the release workflow when present.
   links need Developer Mode on Windows: with it off, S3 must fall back to copies and say so
   rather than fail, which is the platform behaviour worth proving here.
 - cleanup: `msiexec /x` the product, then remove the profile or restore the snapshot.
-- caveats: UNVERIFIED — no Windows host is reachable, so this arm has never run. Signing is
+- caveats: a GitHub-hosted Windows runner can serve as the disposable bench through
+  `workflow_dispatch`, including the full installed smoke contract. Signing is
   Azure Artifact Signing over OIDC and only happens when the `AZURE_SIGNING_ACCOUNT` variable is
   set; until then the MSI ships unsigned and the workflow's verify step is what keeps that
   visible. The `UpgradeCode` and component GUIDs in `Package.wxs` are permanent identity and
@@ -229,9 +234,8 @@ against the release workflow when present.
 - install like a user: expand the zip and put the directory on `PATH`.
 - smoke: S1..S6, plus the archive-shape checks from the `archive` arm.
 - cleanup: remove the expansion directory.
-- caveats: UNVERIFIED — no Windows host is reachable. This is the arm the release notes describe
-  as "packaged from those builds without a separate installation check", so it is the channel
-  with the least coverage today and the one most worth wiring to a real host first.
+- caveats: the release workflow now extracts the built zip and runs S1 to S6 against it
+  on its disposable Windows runner. A local Windows host is not needed for that check.
 
 ## Archaeology
 
@@ -297,7 +301,8 @@ rewrites the ids once that is done.
 
 | path | blob | feeds |
 |---|---|---|
-| `.github/workflows/release.yml` | dad3122101f3 | Project, Channels, Publish |
+| `.github/workflows/release.yml` | 61f21f77c083 | Project, Channels, Publish |
+| `tests/smoke_installed.py` | c48c5d2b33cd | Smoke contract, Channels |
 | `.github/workflows/ci.yml` | 15fb5d69b6db | Project, Archaeology |
 | `packaging/nfpm.yaml` | b3cc2d76b54c | Channels: deb |
 | `packaging/windows/Package.wxs` | db1ecfd3c675 | Channels: msi |
